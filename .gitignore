@@ -1,0 +1,72 @@
+# macOS 系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*.pid
+
+# 编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 备份文件
+*.bak
+*.backup
+*.old
+
+# 测试文件
+test_*
+*_test.sh
+
+# 微信应用副本（避免意外提交）
+# WeChat*.app/
+
+# 日志文件
+logs/
+*.log
+
+# 临时目录
+tmp/
+temp/
+
+# 用户配置文件
+config.local.sh
+settings.local.sh
+
+# 编译输出
+dist/
+build/
+
+# 依赖文件
+node_modules/
+vendor/
+
+# 环境变量文件
+.env
+.env.local
+.env.production
+
+# 密钥文件
+*.key
+*.pem
+*.p12
+*.pfx
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 历史文件
+.history/
