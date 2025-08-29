@@ -23,8 +23,8 @@
 
 1. **克隆仓库**
    ```bash
-   git clone https://github.com/yourusername/DoubleWeChat.git
-   cd DoubleWeChat
+   git clone https://github.com/HerbertGao/double-wechat.git
+   cd double-wechat
    ```
 
 2. **添加执行权限**
