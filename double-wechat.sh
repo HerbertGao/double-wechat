@@ -46,8 +46,8 @@ check_disk_space() {
     if [[ $available_space -lt $required_space ]]; then
         log_warn "磁盘空间可能不足，建议至少200MB可用空间"
         log_warn "当前可用空间: $((available_space / 1000000))MB"
-        read -p "是否继续创建？(y/N): " confirm
-        if [[ ! $confirm =~ ^[Yy]$ ]]; then
+        read -p "是否继续创建？(y/n，默认: y): " confirm
+        if [[ $confirm =~ ^[Nn]$ ]]; then
             log_info "操作已取消"
             exit 0
         fi
@@ -63,15 +63,14 @@ check_existing_instance() {
     
     if [[ -d "$target_app" ]]; then
         log_warn "已存在 WeChat${number}.app"
-        read -p "是否要删除现有实例并重新创建？(y/N): " confirm
-        if [[ $confirm =~ ^[Yy]$ ]]; then
-            log_step "删除现有实例..."
-            sudo rm -rf "$target_app"
-            log_info "现有实例已删除"
-        else
+        read -p "是否要删除现有实例并重新创建？(y/n，默认: y): " confirm
+        if [[ $confirm =~ ^[Nn]$ ]]; then
             log_info "操作已取消"
             exit 0
         fi
+        log_step "删除现有实例..."
+        sudo rm -rf "$target_app"
+        log_info "现有实例已删除"
     fi
 }
 
@@ -200,7 +199,7 @@ delete_instance() {
         local selected_app="${instances[$((choice-1))]}"
         local app_name=$(basename "$selected_app")
         
-        read -p "确定要删除 $app_name 吗？(y/N): " confirm
+        read -p "确定要删除 $app_name 吗？(y/n，默认: n): " confirm
         if [[ $confirm =~ ^[Yy]$ ]]; then
             log_step "删除 $app_name..."
             if sudo rm -rf "$selected_app"; then
