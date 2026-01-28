@@ -28,6 +28,12 @@ log_step() {
     echo -e "${BLUE}[STEP]${NC} $1"
 }
 
+# 获取应用版本号
+get_app_version() {
+    local app_path="$1"
+    /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app_path/Contents/Info.plist" 2>/dev/null
+}
+
 # 检查原始微信应用是否存在
 check_original_wechat() {
     if [[ ! -d "$ORIGINAL_WECHAT" ]]; then
@@ -143,32 +149,44 @@ show_menu() {
     echo "2. 启动现有微信实例"
     echo "3. 列出所有微信实例"
     echo "4. 删除微信实例"
-    echo "5. 退出"
+    echo "5. 一键更新所有实例"
+    echo "6. 退出"
     echo -e "${BLUE}=======================${NC}\n"
 }
 
 # 列出所有微信实例
 list_instances() {
     log_step "扫描微信实例..."
+
+    local original_version=$(get_app_version "$ORIGINAL_WECHAT")
     echo -e "\n${BLUE}已安装的微信实例:${NC}"
-    
+
     # 原始微信
     if [[ -d "$ORIGINAL_WECHAT" ]]; then
-        echo "• WeChat.app (原始)"
+        echo -e "• WeChat.app (原始)  版本: ${GREEN}${original_version:-未知}${NC}"
     fi
-    
+
     # 查找所有WeChat*.app
     local found=false
+    local count=0
     for app in /Applications/WeChat*.app; do
         if [[ -d "$app" && "$app" != "$ORIGINAL_WECHAT" ]]; then
             local app_name=$(basename "$app")
-            echo "• $app_name"
+            local inst_version=$(get_app_version "$app")
+            local version_status=""
+            if [[ -n "$original_version" && -n "$inst_version" && "$inst_version" != "$original_version" ]]; then
+                version_status="  ${RED}[需要更新: ${inst_version} → ${original_version}]${NC}"
+            fi
+            echo -e "• $app_name  版本: ${inst_version:-未知}${version_status}"
             found=true
+            ((count++))
         fi
     done
-    
+
     if [[ "$found" == false ]]; then
         echo "• 未找到其他微信实例"
+    else
+        echo -e "\n共 ${count} 个实例"
     fi
     echo
 }
@@ -255,6 +273,61 @@ start_existing_instance() {
     fi
 }
 
+# 一键更新所有实例
+update_all_instances() {
+    local original_version=$(get_app_version "$ORIGINAL_WECHAT")
+    if [[ -z "$original_version" ]]; then
+        log_error "无法获取原始微信版本号"
+        return
+    fi
+    log_info "原始微信版本: $original_version"
+
+    local updated=0
+    local skipped=0
+    local failed=0
+
+    for app in /Applications/WeChat*.app; do
+        if [[ ! -d "$app" || "$app" == "$ORIGINAL_WECHAT" ]]; then
+            continue
+        fi
+
+        local app_name=$(basename "$app")
+        local inst_version=$(get_app_version "$app")
+        local number=$(echo "$app_name" | sed 's/WeChat\(.*\)\.app/\1/')
+
+        if [[ "$inst_version" == "$original_version" ]]; then
+            log_info "$app_name 版本一致 ($inst_version)，跳过"
+            ((skipped++))
+            continue
+        fi
+
+        log_step "更新 $app_name ($inst_version → $original_version)..."
+
+        # 删除旧副本
+        if ! sudo rm -rf "$app"; then
+            log_error "$app_name 删除失败"
+            ((failed++))
+            continue
+        fi
+
+        # 重新创建实例
+        if create_wechat_instance "$number"; then
+            log_info "$app_name 更新成功"
+            ((updated++))
+        else
+            log_error "$app_name 更新失败"
+            ((failed++))
+        fi
+    done
+
+    echo -e "\n${BLUE}=== 更新汇总 ===${NC}"
+    echo "已更新: $updated"
+    echo "已跳过 (版本一致): $skipped"
+    if [[ $failed -gt 0 ]]; then
+        echo -e "${RED}失败: $failed${NC}"
+    fi
+}
+
 # 主函数
 main() {
     # 检查是否为root用户
@@ -268,7 +341,7 @@ main() {
     
     while true; do
         show_menu
-        read -p "请选择操作 (1-5): " choice
+        read -p "请选择操作 (1-6): " choice
         
         # 清理输入，移除可能的换行符和空格
         choice=$(echo "$choice" | tr -d '\n\r' | xargs)
@@ -305,12 +378,15 @@ main() {
                 delete_instance
                 ;;
             5)
+                update_all_instances
+                ;;
+            6)
                 log_info "退出程序"
                 exit 0
                 ;;
             *)
                 if [[ -n "$choice" ]]; then
-                    log_error "无效的选择，请输入1-5"
+                    log_error "无效的选择，请输入1-6"
                 fi
                 ;;
         esac
