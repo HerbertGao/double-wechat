@@ -1,7 +1,6 @@
 #!/bin/bash
 # Sync the SOT SKILL.md to all host adapter copies.
 # Run this whenever packaging/skill/double-wechat/SKILL.md changes.
-# CI should run this and `git diff --exit-code` to catch drift.
 
 set -euo pipefail
 
