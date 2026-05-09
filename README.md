@@ -89,51 +89,76 @@ double-wechat create 2 --no-launch --yes
 double-wechat update --all --yes
 ```
 
-## 🤖 作为 AI Skill 使用
+## 🤖 作为 AI Skill / Plugin 使用
 
-仓库已附带 host-agnostic 的 SKILL.md（参考 `packaging/skill/double-wechat/SKILL.md`），可以让 Claude Code 或 Codex CLI 通过自然语言调用本工具：
+仓库提供 host-agnostic 的 [SKILL.md](packaging/skill/double-wechat/SKILL.md)，并打包成 Claude Code / Codex CLI 的 plugin，让 AI 通过自然语言或 slash command 调用本工具：
 
 > "再开一个微信" / "我现在有几个微信？" / "把所有副本同步到最新版"
 
-### 安装到 Claude Code
+### 前置：装 binary
+
+Plugin **不打包** binary——它假设 `double-wechat` 命令在 `PATH` 里。最简单：
 
 ```bash
-mkdir -p ~/.claude/skills/double-wechat
-cp -r packaging/skill/double-wechat/* ~/.claude/skills/double-wechat/
+# 用户级（无需 sudo，要求 ~/.local/bin 在 PATH 中）
+ln -s "$PWD/double-wechat.sh" ~/.local/bin/double-wechat
+
+# 或全局（需 sudo 或 /usr/local/bin 可写）
+ln -s "$PWD/double-wechat.sh" /usr/local/bin/double-wechat
 ```
 
-### 安装到 Codex CLI
+### 一行装：Claude Code
 
-按 Codex CLI 当前版本的 plugin/skill 路径放置（通常为 `~/.codex/skills/double-wechat/`，请以你本地 Codex 的最新文档为准）。
+```bash
+claude plugin marketplace add https://github.com/HerbertGao/double-wechat \
+  && claude plugin install double-wechat@double-wechat
+```
 
-无论哪种 host，请确保 `double-wechat` 可执行文件在 `PATH` 中（参考"安装方法"里的软链）。
+> marketplace 清单在仓库根 `.claude-plugin/marketplace.json`；plugin 内含 6 个 slash command + Skill 描述。
 
-### Claude Code Slash Commands（快捷入口）
+### 一行装：Codex CLI
 
-仓库还附带了 6 个 slash command（`.claude/commands/wechat/*.md`），用户在 Claude Code 里可以显式调用：
+```bash
+codex plugin marketplace add https://github.com/HerbertGao/double-wechat
+```
+
+之后编辑 `~/.codex/config.toml` 启用 plugin：
+
+```toml
+[plugins."double-wechat@double-wechat"]
+enabled = true
+```
+
+> marketplace 清单在仓库根 `.agents/plugins/marketplace.json`；Codex 没有 slash command 机制，纯靠 SKILL.md 自然语言路由。
+
+### 装完后可用的 slash command（Claude Code）
 
 | 命令 | 行为 |
 |---|---|
-| `/wechat:list` | 列出原始 + 所有副本及版本 |
-| `/wechat:create [n]` | 创建副本；不指定编号时 AI 自动选空号 |
-| `/wechat:start <n>` | 启动指定副本 |
-| `/wechat:delete <n>` | **先确认再删** |
-| `/wechat:update [--all\|<n>...]` | 列出差异、确认后批量更新 |
-| `/wechat:doctor` | 自检环境（含 `sudo_required` 判定） |
+| `/double-wechat:list` | 列出原始 + 所有副本及版本 |
+| `/double-wechat:create [n]` | 创建副本；不指定编号时 AI 自动选空号 |
+| `/double-wechat:start <n>` | 启动指定副本 |
+| `/double-wechat:delete <n>` | **先确认再删** |
+| `/double-wechat:update [--all\|<n>...]` | 列出差异、确认后批量更新 |
+| `/double-wechat:doctor` | 自检环境（含 `sudo_required` / `legacy_migration_required` 判定） |
 
-**项目级安装（cd 进 repo 自动生效）**：什么都不用做，本仓库已经包含 `.claude/commands/wechat/`，在 repo 根目录启动 Claude Code 即可使用。
-
-**用户级安装（全局可用）**：
+### 卸载
 
 ```bash
-mkdir -p ~/.claude/commands
-cp -r .claude/commands/wechat ~/.claude/commands/
+# Claude Code
+claude plugin uninstall double-wechat
+claude plugin marketplace remove https://github.com/HerbertGao/double-wechat
+
+# Codex
+codex plugin marketplace remove https://github.com/HerbertGao/double-wechat
 ```
 
-或软链方式（更新仓库后自动同步）：
+### 手动安装（不走 marketplace）
+
+如果你不想用 plugin marketplace，也可以手动软链 Skill：
 
 ```bash
-ln -s "$PWD/.claude/commands/wechat" ~/.claude/commands/wechat
+ln -s "$PWD/packaging/skill/double-wechat" ~/.claude/skills/double-wechat
 ```
 
 > Skill 与 Slash Command 互补：日常对话场景用 Skill（"再开一个微信"自动触发），需要确定性快捷入口时用 Slash Command。两者都依赖 `double-wechat` 二进制在 `PATH` 里。

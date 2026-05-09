@@ -12,4 +12,4 @@ allowed-tools: Bash(double-wechat:*)
 - 副本数量
 - 每个副本的编号 + 版本（如版本与原始不一致，明确标注 `[需要更新]`）
 
-如果有 `needs_update: true` 的实例，最后提示用户可以用 `/wechat:update` 一键更新。
+如果有 `needs_update: true` 的实例，最后提示用户可以用 `/double-wechat:update` 一键更新。

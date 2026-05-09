@@ -1,0 +1,29 @@
+{
+  "name": "double-wechat",
+  "version": "2.0.0",
+  "description": "Manage multiple WeChat instances on macOS via natural language.",
+  "author": {
+    "name": "HerbertGao",
+    "url": "https://github.com/HerbertGao"
+  },
+  "homepage": "https://github.com/HerbertGao/double-wechat",
+  "repository": "https://github.com/HerbertGao/double-wechat",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Double WeChat",
+    "shortDescription": "Manage multiple WeChat instances on macOS via natural language.",
+    "longDescription": "List, create, start, delete, and update copies of WeChat.app on macOS. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local double-wechat shell binary.",
+    "category": "Utilities",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "我现在有几个微信？",
+      "再开一个微信",
+      "把所有副本同步到最新版本"
+    ],
+    "brandColor": "#07C160"
+  }
+}
