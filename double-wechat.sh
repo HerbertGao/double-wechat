@@ -281,21 +281,21 @@ cmd_doctor() {
 
     if [[ "$json" == "true" ]]; then
         local legacy_json="["
-        local lf=true
-        local lapp
-        for lapp in "${legacy_apps[@]}"; do
-            $lf || legacy_json+=","
-            lf=false
-            legacy_json+=$(json_str "$lapp")
-        done
-        legacy_json+="]"
         local migration_hint=""
         if [[ $legacy_count -gt 0 ]]; then
+            local lf=true
+            local lapp
+            for lapp in "${legacy_apps[@]}"; do
+                $lf || legacy_json+=","
+                lf=false
+                legacy_json+=$(json_str "$lapp")
+            done
             migration_hint="sudo chown -R \"\$(id -un):staff\""
             for lapp in "${legacy_apps[@]}"; do
                 migration_hint+=" \"$lapp\""
             done
         fi
+        legacy_json+="]"
         printf '{"version":%s,"in_admin_group":%s,"applications_writable":%s,"original_wechat_present":%s,"original_wechat_owner":%s,"original_short_version":%s,"original_build_version":%s,"sudo_required":%s,"can_run_unprivileged":%s,"target_dir":%s,"legacy_owned_instances":%s,"legacy_migration_required":%s,"migration_hint":%s}\n' \
             "$(json_str "$VERSION")" \
             "$in_admin" \
