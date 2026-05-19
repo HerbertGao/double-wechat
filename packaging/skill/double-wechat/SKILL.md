@@ -1,7 +1,7 @@
 ---
 name: double-wechat
-description: Manage multiple WeChat instances on macOS via natural language — list / create / start / delete / update copies of WeChat.app. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local `double-wechat` shell binary.
-min_binary_version: 2.0.0
+description: Manage multiple WeChat instances on macOS via natural language — list / create / start / delete / update / adopt copies of WeChat.app. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local `double-wechat` shell binary.
+min_binary_version: 2.1.0
 ---
 
 # double-wechat Skill
@@ -14,12 +14,13 @@ min_binary_version: 2.0.0
 - "我现在有几个微信？"
 - "WeChat3 不要了，删掉"
 - "原始微信升级了，把所有副本同步到最新版"
+- "WeChat0 自己升级了、比原版还新，帮我理顺"
 - "我的环境能不能跑这个工具？"
 
 **不适用**：
 
 - 跨机器/远程管理
-- 修改原始 `/Applications/WeChat.app`（永远只动副本）
+- 随意改写原始 `/Applications/WeChat.app`（仅 `adopt` 会在受控条件下用更新的副本提升原版）
 - 需要 sudo 的环境（自动检测，doctor 会报告）
 
 ---
@@ -29,7 +30,7 @@ min_binary_version: 2.0.0
 - macOS 12 (Monterey) 或更高
 - `/Applications/WeChat.app` 已正确安装
 - 当前用户必须在 `admin` 组、且 `/Applications` 可写（绝大多数 macOS 用户默认满足；不满足时 `doctor` 会明确报告）
-- `double-wechat` 可执行文件 **≥ 2.0.0** 且在 `PATH` 中
+- `double-wechat` 可执行文件 **≥ 2.1.0** 且在 `PATH` 中
   - 仓库根目录的 `double-wechat.sh` 可直接软链：`ln -s "$PWD/double-wechat.sh" /usr/local/bin/double-wechat`
 
 > Skill 发行物按 host 注册（Claude Code skill / Codex CLI plugin）；具体注册路径与命令见仓库 README。本文件保持 host-agnostic。
@@ -54,7 +55,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 ```jsonc
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "in_admin_group": true,
   "applications_writable": true,
   "original_wechat_present": true,
@@ -189,9 +190,40 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 **Agent 行为约定**：
 
+- **先判断版本方向**：`update` 只适合版本**低于**原版的副本。若 `list --json` 里某副本版本**高于** `original`（被微信自更新所致），它要用 `adopt` 收编，**不能** `update`——否则会被降级
 - 调用前先 `list --json`，把 `instances[].needs_update == true` 的列表回报给用户，确认后再 `update --all --yes`
 - 实现细节：update 内部对每个目标先 `osascript ... to quit` 优雅退出，然后 `rm -rf` + 重新 cp/sign。**用户登录态会丢失**——Agent 应当在确认时提醒这一点
 - 如果 update 失败并报"实例归非当前用户所有"，说明这些实例是旧版 sudo 创建的。**不要重试**，把命令输出里的 `sudo chown -R ...` 行原样展示给用户，让用户先做一次性迁移
+
+---
+
+### 7. `double-wechat adopt [<0-9>] [--yes]`
+
+**用途**：当某个副本因微信自带的应用内更新而版本**高于**原始 `WeChat.app` 时，把该副本「收编」为新的原版（拷贝覆盖 `WeChat.app`），再从新原版重新打包该副本。全程不降级、不触碰用户数据容器。
+
+**背景**：副本被启动后，微信自更新器会就地替换整个 `.app`——build 升高、`CFBundleIdentifier` 改回原版 id、签名换回腾讯签名。结果该副本版本超过原版且丢失多开身份。直接 `update` 会把它**降级**回旧原版；`adopt` 则反向：让更新的副本成为原版。
+
+**参数**：
+
+| 形式 | 说明 |
+|---|---|
+| `<n>` | 显式指定要收编的副本编号 `0-9` |
+| 无编号 | 自动挑选版本最高、且比原版新的副本；无此类副本时输出提示并退出 0 |
+| `--yes` / `-y` | **Agent 必加**：跳过交互确认；非交互环境下未传此参数会失败 |
+
+**前置校验（任一不满足则拒绝并退出 1）**：
+
+- 候选副本版本确实高于原版（否则提示改用 `update`）
+- 候选副本是干净的官方包（带正规腾讯签名、签名校验通过、bundle id 为原版 id）——否则提升为原版会让原版失去正规签名
+- 原版与候选副本均归当前用户所有
+
+**Agent 行为约定**：
+
+- 检测时机：`list --json` 后，若某副本版本数值**高于** `original`（比较 `short_version`，相等再比 `build_version`）→ 该副本走 `adopt`，**不要**走 `update`（update 会降级它）
+- adopt 会**覆盖** `/Applications/WeChat.app`——这是工具中唯一写原始的命令。调用前**必须向用户确认**
+- adopt 完成后原版升级为新版本，其余副本可能变为落后状态；按需再 `update --all --yes`
+
+**退出码**：`0` 成功（含"无副本比原版新"）；`1` 操作失败（含校验未通过）；`2` 参数错误
 
 ---
 
@@ -214,17 +246,17 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 | 数据输出 | stdout，`--json` 模式下为单行 JSON |
 | 日志输出 | stderr，可被 Agent 安全忽略 |
 | 退出码 | `0` 成功 / `1` 业务失败 / `2` 参数错误 |
-| 交互确认 | 写操作（create/delete/update）默认要 stdin 确认；Agent 必加 `--yes` |
+| 交互确认 | 写操作（create/delete/update/adopt）默认要 stdin 确认；Agent 必加 `--yes` |
 | sudo | 不需要；如果 `doctor` 报告 `sudo_required: true`，**不要**绕过 |
-| root 调用 | 写子命令（create/delete/update/start）会主动拒绝 `EUID == 0`。**不要**用 `sudo` 跑这些命令——root 创建的副本归 root 所有，会破坏后续无 sudo 操作 |
+| root 调用 | 写子命令（create/delete/update/start/adopt）会主动拒绝 `EUID == 0`。**不要**用 `sudo` 跑这些命令——root 创建的副本归 root 所有，会破坏后续无 sudo 操作 |
 | 并发 | 不要并行调用写操作（同时改 `/Applications` 不安全）；只读命令（list/doctor）可并行 |
 
 ---
 
 ## 安全与边界
 
-- **写路径限定**：所有写入只发生在 `/Applications/WeChat<0-9>.app`，编号校验严格匹配 `^[0-9]$`，无法逃逸目录
-- **永不动原始**：参数语法物理上无法表达"操作 WeChat.app（无编号）"
+- **写路径限定**：list/create/start/delete/update 只写 `/Applications/WeChat<0-9>.app`，编号校验严格匹配 `^[0-9]$`，无法逃逸目录
+- **adopt 是唯一会写原始 `WeChat.app` 的命令**：它把自更新后版本更高的副本提升为新原版，仅在该副本为带正规腾讯签名的干净官方包时才执行（否则拒绝）；此操作有意覆盖原版，Agent 调用前必须向用户确认
 - **凭据/数据隔离**：每个微信副本有独立的 `~/Library/Containers/com.tencent.xinWeChat<n>/`（macOS 沙箱按 Bundle ID 隔离），Agent 工具不读写这些路径
 - **签名**：副本使用 adhoc 签名（`codesign --sign -`），仅本机有效，无法分发
 - **腾讯 ToS 边界**：多开微信可能违反腾讯用户协议，由用户承担合规边界
@@ -234,7 +266,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 ## 与人类 CLI 接口的关系
 
-无参 `double-wechat` 仍是人类用户的交互菜单入口；启动时会自动检测版本差异并提示一键更新。子命令模式与菜单模式共享同一份核心实现（`do_create_instance` / `do_start_instance` / `do_delete_instance`），任何修复同时受益。
+无参 `double-wechat` 仍是人类用户的交互菜单入口；启动时会自动检测版本差异并提示一键同步（较新的副本走 adopt、较旧的走 update）。子命令模式与菜单模式共享同一份核心实现（`do_create_instance` / `do_start_instance` / `do_delete_instance`），任何修复同时受益。
 
 > Agent 调用形态**仅限**子命令；遇到只用菜单完成的旧文档示例时，请翻译为对应子命令再执行。
 
@@ -280,4 +312,15 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 3. user: 是
 4. Agent: double-wechat delete 3 --yes
 5. Agent → user: "WeChat3.app 已删除。"
+```
+
+**例 5：用户说"WeChat0 自己升级了，比原始微信还新"**
+
+```
+1. Agent: double-wechat list --json
+   → 发现 WeChat0 版本高于 original（自更新所致）
+2. Agent → user: "WeChat0 已自更新到比原始微信更新的版本。我可以把它『收编』为新的原始 WeChat.app，再重新打包 WeChat0——这样不降级。这一步会覆盖 /Applications/WeChat.app，确认吗？"
+3. user: 确认
+4. Agent: double-wechat adopt 0 --yes
+5. Agent → user: "已把 WeChat0 收编为新原版，两者均为最新版本。"
 ```

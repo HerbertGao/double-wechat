@@ -1,6 +1,6 @@
 {
   "name": "double-wechat",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Manage multiple WeChat instances on macOS via natural language.",
   "author": {
     "name": "HerbertGao",
@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "Double WeChat",
     "shortDescription": "Manage multiple WeChat instances on macOS via natural language.",
-    "longDescription": "List, create, start, delete, and update copies of WeChat.app on macOS. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local double-wechat shell binary.",
+    "longDescription": "List, create, start, delete, update, and adopt copies of WeChat.app on macOS. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local double-wechat shell binary.",
     "category": "Utilities",
     "capabilities": [
       "Interactive",
