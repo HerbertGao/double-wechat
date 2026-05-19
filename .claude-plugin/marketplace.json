@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Self-hosted Claude Code plugin marketplace for double-wechat — manage multiple WeChat instances on macOS via natural language.",
-    "version": "2.0.0"
+    "version": "2.1.0"
   },
   "plugins": [
     {
       "name": "double-wechat",
       "source": "./packaging/claude-code",
-      "description": "List / create / start / delete / update / doctor multiple WeChat instances on macOS. Provides 6 /double-wechat:* slash commands and a Skill description, all unprivileged."
+      "description": "List / create / start / delete / update / adopt / doctor multiple WeChat instances on macOS. Provides 7 /double-wechat:* slash commands and a Skill description, all unprivileged."
     }
   ]
 }

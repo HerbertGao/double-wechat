@@ -11,6 +11,7 @@
 #   double-wechat start <0-9>
 #   double-wechat delete <0-9> [--yes]
 #   double-wechat update [--all | <n>...] [--yes]
+#   double-wechat adopt [<0-9>] [--yes]
 #   double-wechat doctor [--json]
 #   double-wechat help
 #   double-wechat version
@@ -23,7 +24,7 @@
 
 set -uo pipefail
 
-readonly VERSION="2.0.0"
+readonly VERSION="2.1.0"
 
 # ----- 配置 -----
 readonly ORIGINAL_WECHAT="/Applications/WeChat.app"
@@ -54,6 +55,36 @@ format_version_info() {
     elif [[ -n "$s" && -n "$b" ]]; then echo "${s} (Build ${b})"
     elif [[ -n "$s" ]];            then echo "$s"
     else                                echo "Build ${b}"
+    fi
+}
+
+# 比较两个版本，echo: 1 (a>b) / 0 (a==b) / -1 (a<b)
+# 先比 short_version（点分数值，逐段比较），相等再比 build（数值，非数值降级为字符串比较）
+version_compare() {
+    local a_short="$1" a_build="$2" b_short="$3" b_build="$4"
+    local -a as bs
+    local IFS=.
+    read -ra as <<< "$a_short"
+    read -ra bs <<< "$b_short"
+    local i max=${#as[@]}
+    [[ ${#bs[@]} -gt $max ]] && max=${#bs[@]}
+    for ((i=0; i<max; i++)); do
+        local x="${as[i]:-0}" y="${bs[i]:-0}"
+        [[ "$x" =~ ^[0-9]+$ ]] || x=0
+        [[ "$y" =~ ^[0-9]+$ ]] || y=0
+        if   ((10#$x > 10#$y)); then echo 1;  return; fi
+        if   ((10#$x < 10#$y)); then echo -1; return; fi
+    done
+    if [[ "$a_build" =~ ^[0-9]+$ && "$b_build" =~ ^[0-9]+$ ]]; then
+        if   ((10#$a_build > 10#$b_build)); then echo 1
+        elif ((10#$a_build < 10#$b_build)); then echo -1
+        else echo 0
+        fi
+        return
+    fi
+    if   [[ "$a_build" > "$b_build" ]]; then echo 1
+    elif [[ "$a_build" < "$b_build" ]]; then echo -1
+    else echo 0
     fi
 }
 
@@ -123,6 +154,20 @@ scan_legacy_owned_instances() {
             echo "$app"
         fi
     done
+}
+
+# 判断 app 是否为「干净的官方 WeChat bundle」——带正规腾讯签名（非 adhoc）、
+# 签名校验通过、bundle id 为原版 id。满足时该副本可安全提升为原版。
+# 副本自更新后会恢复成这个状态（自更新器写下完整官方包，抹掉我们的改动）。
+is_genuine_official_bundle() {
+    local app="$1"
+    [[ -d "$app" ]] || return 1
+    codesign --verify --deep --strict "$app" >/dev/null 2>&1 || return 1
+    local team
+    team=$(codesign -dv "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+    [[ -n "$team" && "$team" != "not set" ]] || return 1
+    [[ "$(get_app_bundle_id "$app")" == "$ORIGINAL_BUNDLE_ID" ]] || return 1
+    return 0
 }
 
 print_migration_hint() {
@@ -603,6 +648,187 @@ cmd_update() {
     [[ $failed -gt 0 ]] && return 1 || return 0
 }
 
+# adopt：当某个副本因自更新而版本高于原版时，把它「收编」为新的原版，
+# 再从新原版重新打包该副本。全程不降级、不动用户数据容器。
+cmd_adopt() {
+    require_unprivileged || return 1
+    local number="" yes=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y) yes=true; shift;;
+            -*)       log_error "未知参数: $1"; return 2;;
+            *) [[ -z "$number" ]] && number="$1" || { log_error "多余参数: $1"; return 2; }; shift;;
+        esac
+    done
+    [[ -n "$number" ]] && { validate_number "$number" || return 2; }
+    require_original_wechat || return 1
+
+    local original_version original_build
+    original_version=$(get_app_version "$ORIGINAL_WECHAT")
+    original_build=$(get_app_build "$ORIGINAL_WECHAT")
+
+    # 确定候选副本：显式指定，或自动挑选「版本最高」的副本
+    local candidate=""
+    if [[ -n "$number" ]]; then
+        candidate="${TARGET_DIR}/WeChat${number}.app"
+        [[ -d "$candidate" ]] || { log_error "实例不存在: WeChat${number}.app"; return 1; }
+    else
+        local best="" best_v="$original_version" best_b="$original_build"
+        local app
+        while IFS= read -r app; do
+            [[ -z "$app" ]] && continue
+            local v b
+            v=$(get_app_version "$app")
+            b=$(get_app_build "$app")
+            if [[ "$(version_compare "$v" "$b" "$best_v" "$best_b")" == "1" ]]; then
+                best="$app"; best_v="$v"; best_b="$b"
+            fi
+        done < <(scan_instances)
+        if [[ -z "$best" ]]; then
+            log_info "没有副本比原版更新，无需 adopt"
+            return 0
+        fi
+        candidate="$best"
+    fi
+
+    local cand_name cand_n cand_v cand_b
+    cand_name=$(basename "$candidate")
+    cand_n=$(extract_number_from_app "$candidate")
+    cand_v=$(get_app_version "$candidate")
+    cand_b=$(get_app_build "$candidate")
+
+    # 校验 1：候选必须确实比原版新
+    if [[ "$(version_compare "$cand_v" "$cand_b" "$original_version" "$original_build")" != "1" ]]; then
+        log_error "${cand_name}（$(format_version_info "$cand_v" "$cand_b")）不比原版（$(format_version_info "$original_version" "$original_build")）新，无需 adopt"
+        log_error "若只是想把它同步到原版，请用: double-wechat update ${cand_n}"
+        return 1
+    fi
+
+    # 校验 2：候选必须是干净的官方 bundle，否则提升为原版会让原版失去正规签名
+    if ! is_genuine_official_bundle "$candidate"; then
+        log_error "${cand_name} 不是干净的官方 WeChat bundle（缺正规腾讯签名 / 签名校验未通过 / bundle id 非原版）"
+        log_error "拒绝将其提升为原版——这会让原版失去正规签名"
+        return 1
+    fi
+
+    # 校验 3：原版与候选均需归当前用户所有
+    if ! is_owned_by_current_user "$ORIGINAL_WECHAT"; then
+        log_error "原始 WeChat.app 归非当前用户所有，无法覆盖"
+        print_migration_hint "\"$ORIGINAL_WECHAT\""
+        return 1
+    fi
+    if ! is_owned_by_current_user "$candidate"; then
+        log_error "${cand_name} 归非当前用户所有（典型为旧版 sudo 创建）"
+        print_migration_hint "\"$candidate\""
+        return 1
+    fi
+
+    log_info "将把 ${cand_name} 收编为新的原始 WeChat.app"
+    printf '  原始 WeChat.app : %s → %s\n' "$(format_version_info "$original_version" "$original_build")" "$(format_version_info "$cand_v" "$cand_b")" >&2
+    printf '  随后重新打包    : %s（恢复多开标识符 + 重签名）\n' "$cand_name" >&2
+
+    if [[ "$yes" != "true" ]]; then
+        if [[ -t 0 ]]; then
+            read -p "确认执行？(y/n，默认: y): " confirm
+            [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已取消"; return 0; }
+        else
+            log_error "非交互模式下请加 --yes 才会执行"
+            return 1
+        fi
+    fi
+
+    # 退出原版与候选实例（二者当前 bundle id 可能相同，重复 quit 无害）
+    try_quit_instance "$ORIGINAL_WECHAT"
+    try_quit_instance "$candidate"
+
+    # 第一步：候选 → 原版。先拷到临时目录再 mv，尽量缩小「原版缺失」窗口。
+    log_step "用 ${cand_name} 覆盖原始 WeChat.app..."
+    local tmp="${ORIGINAL_WECHAT}.adopt-tmp"
+    rm -rf "$tmp"
+    if ! cp -R "$candidate" "$tmp"; then
+        log_error "复制候选实例失败"
+        rm -rf "$tmp"
+        return 1
+    fi
+    if ! rm -rf "$ORIGINAL_WECHAT"; then
+        log_error "删除旧的原始 WeChat.app 失败"
+        rm -rf "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$ORIGINAL_WECHAT"; then
+        log_error "致命：替换原始 WeChat.app 失败，原版可能已缺失！临时副本仍在: $tmp"
+        return 1
+    fi
+    log_info "原始 WeChat.app 已更新至 $(format_version_info "$cand_v" "$cand_b")"
+
+    # 第二步：从新原版重新打包候选副本（恢复 bundle id + adhoc 重签名）
+    log_step "重新打包 ${cand_name}..."
+    if ! do_create_instance "$cand_n"; then
+        log_error "重新打包 ${cand_name} 失败"
+        log_error "原版已更新成功，但 ${cand_name} 未重建；请运行: double-wechat create ${cand_n}"
+        return 1
+    fi
+
+    log_info "✓ adopt 完成：原版与 ${cand_name} 均为 $(format_version_info "$cand_v" "$cand_b")"
+
+    # 提示其它落后副本
+    local stale=()
+    local app
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        [[ "$app" == "$candidate" ]] && continue
+        local v b
+        v=$(get_app_version "$app")
+        b=$(get_app_build "$app")
+        if [[ "$v" != "$cand_v" || "$b" != "$cand_b" ]]; then
+            stale+=("$app")
+        fi
+    done < <(scan_instances)
+    if [[ ${#stale[@]} -gt 0 ]]; then
+        log_warn "另有 ${#stale[@]} 个副本版本落后于新原版，建议运行: double-wechat update --all"
+    fi
+}
+
+# 一键同步：把所有实例对齐到最高版本，不降级。
+# 若有副本因自更新而高于原版 → 先 adopt（提升为原版并重打包）；
+# 随后把落后副本 update 到（可能已被提升的）原版。
+# 已知限制：若多个副本自更新到完全相同的最高版本，只有其一会被 adopt，
+# 其余同版本副本的多开身份不会被修复（update 跳过同版本副本）。
+# 供交互菜单「5」与根命令启动自检复用。
+cmd_sync() {
+    require_unprivileged || return 1
+    require_original_wechat || return 1
+    local yes=false
+    [[ "${1:-}" =~ ^(--yes|-y)$ ]] && yes=true
+
+    local ov ob
+    ov=$(get_app_version "$ORIGINAL_WECHAT")
+    ob=$(get_app_build "$ORIGINAL_WECHAT")
+
+    # 是否存在比原版更新的副本（自更新所致）→ 需先 adopt，避免被 update 降级
+    local has_newer=false
+    local app v b
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        v=$(get_app_version "$app")
+        b=$(get_app_build "$app")
+        if [[ "$(version_compare "$v" "$b" "$ov" "$ob")" == "1" ]]; then
+            has_newer=true
+            break
+        fi
+    done < <(scan_instances)
+
+    if [[ "$has_newer" == "true" ]]; then
+        if $yes; then cmd_adopt --yes || return 1
+        else          cmd_adopt       || return 1
+        fi
+    fi
+
+    if $yes; then cmd_update --all --yes
+    else          cmd_update --all
+    fi
+}
+
 cmd_help() {
     cat <<EOF
 double-wechat v${VERSION} — macOS 微信多开管理工具
@@ -614,6 +840,7 @@ double-wechat v${VERSION} — macOS 微信多开管理工具
   double-wechat start <0-9>                         # 启动指定实例
   double-wechat delete <0-9> [--yes]                # 删除指定实例
   double-wechat update [--all | <n>...] [--yes]     # 同步副本到原始版本
+  double-wechat adopt [<0-9>] [--yes]               # 收编自更新的较新副本为原版
   double-wechat doctor [--json]                     # 自检环境
   double-wechat help                                # 显示本帮助
   double-wechat version                             # 显示版本
@@ -633,7 +860,7 @@ show_menu() {
     echo "2. 启动现有微信实例"
     echo "3. 列出所有微信实例"
     echo "4. 删除微信实例"
-    echo "5. 一键更新所有过期实例"
+    echo "5. 一键同步所有实例到最新版本"
     echo "0. 退出"
     printf '%s=======================%s\n\n' "$BLUE" "$NC"
 }
@@ -693,7 +920,7 @@ startup_version_check() {
     ob=$(get_app_build "$ORIGINAL_WECHAT")
     [[ -z "$ov" && -z "$ob" ]] && return 0
 
-    local needs=()
+    local mismatched=()
     local app
     while IFS= read -r app; do
         [[ -z "$app" ]] && continue
@@ -701,25 +928,30 @@ startup_version_check() {
         v=$(get_app_version "$app")
         b=$(get_app_build "$app")
         if [[ "$v" != "$ov" || "$b" != "$ob" ]]; then
-            needs+=("$app")
+            mismatched+=("$app")
         fi
     done < <(scan_instances)
 
-    [[ ${#needs[@]} -eq 0 ]] && return 0
+    [[ ${#mismatched[@]} -eq 0 ]] && return 0
 
     local oi; oi=$(format_version_info "$ov" "$ob")
-    printf '\n%s检测到 %d 个实例版本与原始微信不一致%s\n' "$YELLOW" "${#needs[@]}" "$NC" >&2
+    printf '\n%s检测到 %d 个实例版本与原始微信不一致%s\n' "$YELLOW" "${#mismatched[@]}" "$NC" >&2
     printf '原始微信版本: %s%s%s\n' "$GREEN" "$oi" "$NC" >&2
-    for app in "${needs[@]}"; do
-        local v b
+    for app in "${mismatched[@]}"; do
+        local v b cmp tag
         v=$(get_app_version "$app")
         b=$(get_app_build "$app")
-        printf "  • %s (%s)\n" "$(basename "$app")" "$(format_version_info "$v" "$b")" >&2
+        cmp=$(version_compare "$v" "$b" "$ov" "$ob")
+        if   [[ "$cmp" == "1" ]];  then tag="较新，将收编为原版"
+        elif [[ "$cmp" == "-1" ]]; then tag="较旧，将更新"
+        else                            tag="版本不同，将更新"
+        fi
+        printf "  • %s (%s) — %s\n" "$(basename "$app")" "$(format_version_info "$v" "$b")" "$tag" >&2
     done
     echo >&2
-    read -p "是否一键更新这些实例？(y/n，默认: y): " confirm
-    [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过更新"; return 0; }
-    cmd_update --all --yes
+    read -p "是否一键同步到最新版本？(y/n，默认: y): " confirm
+    [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过同步"; return 0; }
+    cmd_sync --yes
 }
 
 interactive_main() {
@@ -741,7 +973,7 @@ interactive_main() {
             2) interactive_start;;
             3) cmd_list;;
             4) interactive_delete;;
-            5) cmd_update --all;;
+            5) cmd_sync;;
             0) log_info "退出程序"; exit 0;;
             *) [[ -n "$choice" ]] && log_error "无效的选择，请输入 1-5 或 0";;
         esac
@@ -762,6 +994,7 @@ main() {
         start)                 shift; cmd_start  "$@";;
         delete|rm)             shift; cmd_delete "$@";;
         update)                shift; cmd_update "$@";;
+        adopt)                 shift; cmd_adopt  "$@";;
         doctor)                shift; cmd_doctor "$@";;
         help|-h|--help)        cmd_help;;
         version|-v|--version)  echo "double-wechat v${VERSION}";;

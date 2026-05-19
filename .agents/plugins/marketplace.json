@@ -1,10 +1,10 @@
 {
   "name": "double-wechat",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "interface": {
     "displayName": "Double WeChat",
     "shortDescription": "Self-hosted Codex CLI marketplace for double-wechat.",
-    "longDescription": "Provides a Codex CLI plugin (double-wechat) that lets the user manage multiple WeChat instances on macOS via natural language — list / create / start / delete / update copies of WeChat.app. All operations run as the current user (no sudo required when in admin group). Backed by a local double-wechat shell binary."
+    "longDescription": "Provides a Codex CLI plugin (double-wechat) that lets the user manage multiple WeChat instances on macOS via natural language — list / create / start / delete / update / adopt copies of WeChat.app. All operations run as the current user (no sudo required when in admin group). Backed by a local double-wechat shell binary."
   },
   "owner": {
     "name": "HerbertGao",
@@ -22,7 +22,7 @@
         "authentication": "ON_USE"
       },
       "category": "Utilities",
-      "description": "Manage multiple WeChat instances on macOS via natural language. SKILL.md routes natural language to the local double-wechat binary (list/create/start/delete/update/doctor)."
+      "description": "Manage multiple WeChat instances on macOS via natural language. SKILL.md routes natural language to the local double-wechat binary (list/create/start/delete/update/adopt/doctor)."
     }
   ]
 }
