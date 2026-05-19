@@ -789,6 +789,23 @@ cmd_adopt() {
     fi
 }
 
+# echo "true" 若存在副本版本高于原版，否则 "false"。供 cmd_sync 判定是否需要 adopt。
+has_newer_instance() {
+    local ov ob
+    ov=$(get_app_version "$ORIGINAL_WECHAT")
+    ob=$(get_app_build "$ORIGINAL_WECHAT")
+    local app v b
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        v=$(get_app_version "$app")
+        b=$(get_app_build "$app")
+        if [[ "$(version_compare "$v" "$b" "$ov" "$ob")" == "1" ]]; then
+            echo "true"; return 0
+        fi
+    done < <(scan_instances)
+    echo "false"
+}
+
 # 一键同步：把所有实例对齐到最高版本，不降级。
 # 若有副本因自更新而高于原版 → 先 adopt（提升为原版并重打包）；
 # 随后把落后副本 update 到（可能已被提升的）原版。
@@ -801,26 +818,17 @@ cmd_sync() {
     local yes=false
     [[ "${1:-}" =~ ^(--yes|-y)$ ]] && yes=true
 
-    local ov ob
-    ov=$(get_app_version "$ORIGINAL_WECHAT")
-    ob=$(get_app_build "$ORIGINAL_WECHAT")
-
-    # 是否存在比原版更新的副本（自更新所致）→ 需先 adopt，避免被 update 降级
-    local has_newer=false
-    local app v b
-    while IFS= read -r app; do
-        [[ -z "$app" ]] && continue
-        v=$(get_app_version "$app")
-        b=$(get_app_build "$app")
-        if [[ "$(version_compare "$v" "$b" "$ov" "$ob")" == "1" ]]; then
-            has_newer=true
-            break
-        fi
-    done < <(scan_instances)
-
-    if [[ "$has_newer" == "true" ]]; then
+    # 存在比原版更新的副本（自更新所致）→ 需先 adopt，避免被 update 降级
+    if [[ "$(has_newer_instance)" == "true" ]]; then
         if $yes; then cmd_adopt --yes || return 1
         else          cmd_adopt       || return 1
+        fi
+        # adopt 后仍有更新副本 → adopt 未执行（交互模式下用户取消了确认）。
+        # cmd_adopt 取消时返回 0，无法靠退出码区分；此处复查实际状态。
+        # 若继续 update 会把较新副本降级，违背 adopt 初衷，故中止同步。
+        if [[ "$(has_newer_instance)" == "true" ]]; then
+            log_info "adopt 未执行，已中止同步（继续会降级较新副本）"
+            return 0
         fi
     fi
 
@@ -949,7 +957,7 @@ startup_version_check() {
         printf "  • %s (%s) — %s\n" "$(basename "$app")" "$(format_version_info "$v" "$b")" "$tag" >&2
     done
     echo >&2
-    read -p "是否一键同步到最新版本？(y/n，默认: y): " confirm
+    read -p "是否一键同步到最新版本？(y/n，默认: y): " confirm || confirm=n
     [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过同步"; return 0; }
     cmd_sync --yes
 }
@@ -961,7 +969,7 @@ interactive_main() {
 
     while true; do
         show_menu
-        read -p "请选择操作 (1-5, 0退出): " choice
+        read -p "请选择操作 (1-5, 0退出): " choice || { echo >&2; log_info "输入流结束，退出程序"; exit 0; }
         choice=$(echo "$choice" | tr -d '\n\r' | xargs)
         case "$choice" in
             1)
@@ -978,7 +986,7 @@ interactive_main() {
             *) [[ -n "$choice" ]] && log_error "无效的选择，请输入 1-5 或 0";;
         esac
         echo
-        read -p "按回车键继续..."
+        read -p "按回车键继续..." || { echo >&2; log_info "输入流结束，退出程序"; exit 0; }
     done
 }
 
