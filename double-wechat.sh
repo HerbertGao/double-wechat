@@ -666,6 +666,8 @@ cmd_adopt() {
     local original_version original_build
     original_version=$(get_app_version "$ORIGINAL_WECHAT")
     original_build=$(get_app_build "$ORIGINAL_WECHAT")
+    # 原版版本读不出则基线无法确定；否则 version_compare 拿空串当基线会误判任意实例更新
+    [[ -z "$original_version" && -z "$original_build" ]] && { log_error "无法读取原始 WeChat 版本"; return 1; }
 
     # 确定候选副本：显式指定，或自动挑选「版本最高」的副本
     local candidate=""
