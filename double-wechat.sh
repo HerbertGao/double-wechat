@@ -156,6 +156,50 @@ scan_legacy_owned_instances() {
     done
 }
 
+# 扫描「改名被自更新回退」的副本：bundle id 与编号不匹配。
+# WeChat<N>.app 应为 com.tencent.xinWeChat<N>；自更新器写回完整官方包时会抹掉改名，
+# id 退回原版 id（与原版撞车，多开失效）。与版本无关——版本可能与原版相同，
+# 因此 update/adopt（靠版本比对）发现不了它。bundle id 读不出时跳过（不误报）。
+scan_brand_mismatched_instances() {
+    local app
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        local n bid
+        n=$(extract_number_from_app "$app")
+        bid=$(get_app_bundle_id "$app")
+        [[ -n "$bid" && "$bid" != "${ORIGINAL_BUNDLE_ID}${n}" ]] && echo "$app"
+    done < <(scan_instances)
+}
+
+# 给「改名被回退」的副本一条正确的修复命令：副本版本高于原版（自更新常见）时用 adopt
+# 收编为新原版——用 create 会从较旧原版重建导致降级；版本相同/更旧时用 create 重建。
+# 参数：app 路径、原版 short_version、原版 build。
+brand_fix_hint() {
+    local app="$1" ov="$2" ob="$3"
+    local n v b cmp
+    n=$(extract_number_from_app "$app")
+    v=$(get_app_version "$app"); b=$(get_app_build "$app")
+    cmp=$(version_compare "$v" "$b" "$ov" "$ob")
+    # 仅当副本确实更新、且原版版本完整可读时才推荐 adopt：任一版本字段缺失都无法可靠判断新旧，
+    # 且原版版本读不出时 adopt 本就会拒绝执行——一律退回安全的 create。
+    if [[ "$cmp" == "1" && -n "$ov" && -n "$ob" ]]; then
+        echo "double-wechat adopt ${n}   # 副本较新，收编为原版（create 会降级）"
+    else
+        echo "double-wechat create ${n}"
+    fi
+}
+
+# 打印单个「改名被回退」副本的报告行：现值/应为 + 版本安全的修复命令。
+# doctor 与 startup 共用，避免两处重复维护同一格式。
+print_brand_mismatch() {
+    local app="$1" ov="$2" ob="$3"
+    local n bid
+    n=$(extract_number_from_app "$app")
+    bid=$(get_app_bundle_id "$app")
+    printf "  • %s: 现为 %s，应为 %s%s%s\n" "$(basename "$app")" "$bid" "$GREEN" "${ORIGINAL_BUNDLE_ID}${n}" "$NC" >&2
+    printf "    修复：%s\n" "$(brand_fix_hint "$app" "$ov" "$ob")" >&2
+}
+
 # 判断 app 是否为「干净的官方 WeChat bundle」——带正规腾讯签名（非 adhoc）、
 # 签名校验通过、bundle id 为原版 id。满足时该副本可安全提升为原版。
 # 副本自更新后会恢复成这个状态（自更新器写下完整官方包，抹掉我们的改动）。
@@ -195,6 +239,7 @@ do_create_instance() {
             return 1
         fi
         log_step "覆盖既有实例 WeChat${number}.app..."
+        force_quit_instance "$target_app"   # 覆盖前强制退出，避免 rm -rf/重签一个正在运行的副本
         rm -rf "$target_app" || { log_error "删除既有实例失败"; return 1; }
     fi
 
@@ -248,12 +293,24 @@ do_start_instance() {
     return 1
 }
 
-try_quit_instance() {
+# 强制退出指定 app 的所有进程。按「可执行文件路径」匹配（锚定命令行开头 ^ 并转义 .），
+# 只命中可执行文件即该副本的进程，不误伤仅在参数里出现该路径的无关进程（如 less/编辑器）；
+# 绝不用 bundle id——被自更新回退的副本 id 与原版撞车，按 id 退会误杀正在运行的原版微信。
+# 先 SIGTERM 并等待其退出（最多 ~3 秒），仍在则 SIGKILL。（聊天数据在独立容器、WCDB 崩溃安全，
+# 强退不致损坏；SIGTERM 不保证 GUI 优雅退出，故不承诺落盘。）
+force_quit_instance() {
     local app="$1"
-    local bid; bid=$(get_app_bundle_id "$app")
-    if [[ -n "$bid" ]]; then
-        osascript -e "tell application id \"${bid}\" to quit" >/dev/null 2>&1 || true
-        sleep 1
+    local pat="^${app//./\\.}/Contents/MacOS/WeChat"
+    pgrep -f "$pat" >/dev/null 2>&1 || return 0
+    log_step "退出正在运行的 $(basename "$app")..."
+    pkill -TERM -f "$pat" 2>/dev/null || true
+    local i=0
+    while pgrep -f "$pat" >/dev/null 2>&1 && (( i < 15 )); do
+        sleep 0.2; i=$((i + 1))
+    done
+    if pgrep -f "$pat" >/dev/null 2>&1; then
+        pkill -KILL -f "$pat" 2>/dev/null || true
+        sleep 0.3
     fi
 }
 
@@ -269,7 +326,7 @@ do_delete_instance() {
         print_migration_hint "\"$target_app\""
         return 1
     fi
-    try_quit_instance "$target_app"
+    force_quit_instance "$target_app"
     if rm -rf "$target_app"; then
         log_info "WeChat${number}.app 已删除"
         return 0
@@ -324,6 +381,19 @@ cmd_doctor() {
     local legacy_required="false"
     [[ $legacy_count -gt 0 ]] && legacy_required="true"
 
+    # 扫描 bundle id 与编号不匹配的副本（自更新回退了改名；与版本无关）
+    local brand_apps=()
+    if [[ "$original_present" == "true" ]]; then
+        local app
+        while IFS= read -r app; do
+            [[ -z "$app" ]] && continue
+            brand_apps+=("$app")
+        done < <(scan_brand_mismatched_instances)
+    fi
+    local brand_count=${#brand_apps[@]}
+    local brand_required="false"
+    [[ $brand_count -gt 0 ]] && brand_required="true"
+
     if [[ "$json" == "true" ]]; then
         local legacy_json="["
         local migration_hint=""
@@ -341,7 +411,17 @@ cmd_doctor() {
             done
         fi
         legacy_json+="]"
-        printf '{"version":%s,"in_admin_group":%s,"applications_writable":%s,"original_wechat_present":%s,"original_wechat_owner":%s,"original_short_version":%s,"original_build_version":%s,"sudo_required":%s,"can_run_unprivileged":%s,"target_dir":%s,"legacy_owned_instances":%s,"legacy_migration_required":%s,"migration_hint":%s}\n' \
+        local brand_json="["
+        if [[ $brand_count -gt 0 ]]; then
+            local bf=true bapp
+            for bapp in "${brand_apps[@]}"; do
+                $bf || brand_json+=","
+                bf=false
+                brand_json+=$(json_str "$bapp")
+            done
+        fi
+        brand_json+="]"
+        printf '{"version":%s,"in_admin_group":%s,"applications_writable":%s,"original_wechat_present":%s,"original_wechat_owner":%s,"original_short_version":%s,"original_build_version":%s,"sudo_required":%s,"can_run_unprivileged":%s,"target_dir":%s,"legacy_owned_instances":%s,"legacy_migration_required":%s,"migration_hint":%s,"brand_mismatched_instances":%s,"brand_mismatch_required":%s}\n' \
             "$(json_str "$VERSION")" \
             "$in_admin" \
             "$apps_writable" \
@@ -354,7 +434,9 @@ cmd_doctor() {
             "$(json_str "$TARGET_DIR")" \
             "$legacy_json" \
             "$legacy_required" \
-            "$(json_str "$migration_hint")"
+            "$(json_str "$migration_hint")" \
+            "$brand_json" \
+            "$brand_required"
         return 0
     fi
 
@@ -382,6 +464,15 @@ cmd_doctor() {
             cmd+=" \"$lapp\""
         done
         echo "$cmd" >&2
+    fi
+    if [[ $brand_count -gt 0 ]]; then
+        echo
+        log_warn "检测到 ${brand_count} 个实例的 Bundle ID 被自更新回退（与编号不符，多开会失效）："
+        local bapp
+        for bapp in "${brand_apps[@]}"; do
+            print_brand_mismatch "$bapp" "$original_version" "$original_build"
+        done
+        log_warn "修复后登录态与聊天记录保留（存于独立沙盒容器，不受影响）"
     fi
     if [[ "$can_run" != "true" ]]; then
         log_warn "环境不满足，请按上方信息排查"
@@ -636,7 +727,6 @@ cmd_update() {
     local updated=0 failed=0
     for app in "${targets[@]}"; do
         local n; n=$(extract_number_from_app "$app")
-        try_quit_instance "$app"
         if do_create_instance "$n"; then
             ((updated++))
         else
@@ -739,9 +829,9 @@ cmd_adopt() {
         fi
     fi
 
-    # 退出原版与候选实例（二者当前 bundle id 可能相同，重复 quit 无害）
-    try_quit_instance "$ORIGINAL_WECHAT"
-    try_quit_instance "$candidate"
+    # 退出原版与候选实例（按可执行文件路径精确退出；二者 bundle id 可能相同，故绝不按 id 退）
+    force_quit_instance "$ORIGINAL_WECHAT"
+    force_quit_instance "$candidate"
 
     # 第一步：候选 → 原版。先拷到临时目录再 mv，尽量缩小「原版缺失」窗口。
     log_step "用 ${cand_name} 覆盖原始 WeChat.app..."
@@ -964,10 +1054,34 @@ startup_version_check() {
     cmd_sync --yes
 }
 
+# 启动时立即检测 bundle id 被自更新回退的副本（版本检查漏掉的那类，尤其版本与原版相同时）。
+# 只检测 + 给出正确的修复命令，不自动修复：修复需按版本关系在 adopt/create 间选择（避免降级），
+# 且回退副本的 id 与原版撞车、自动重建可能误伤正在运行的原版微信——故交由用户按提示手动执行。
+startup_brand_check() {
+    [[ -d "$ORIGINAL_WECHAT" ]] || return 0
+    local ov ob
+    ov=$(get_app_version "$ORIGINAL_WECHAT")
+    ob=$(get_app_build "$ORIGINAL_WECHAT")
+    local mism=()
+    local app
+    while IFS= read -r app; do
+        [[ -z "$app" ]] && continue
+        mism+=("$app")
+    done < <(scan_brand_mismatched_instances)
+    [[ ${#mism[@]} -eq 0 ]] && return 0
+
+    printf '\n%s检测到 %d 个实例的 Bundle ID 被自更新回退（与原版撞车，多开会失效）%s\n' "$YELLOW" "${#mism[@]}" "$NC" >&2
+    for app in "${mism[@]}"; do
+        print_brand_mismatch "$app" "$ov" "$ob"
+    done
+    printf '%s修复命令会自动退出相关实例后从原版重建；登录态与聊天记录保留（存于独立容器，不受影响）%s\n' "$YELLOW" "$NC" >&2
+}
+
 interactive_main() {
     require_unprivileged || exit 1
     require_original_wechat || exit 1
     startup_version_check
+    startup_brand_check
 
     while true; do
         show_menu
@@ -1012,4 +1126,7 @@ main() {
     esac
 }
 
-main "$@"
+# 被 source 时不执行（便于对内部函数做单元测试）；用 if 而非 && 以免 source 时留下 $?=1
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
