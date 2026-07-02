@@ -86,7 +86,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 - `brand_mismatch_required: true` → 该副本的 Bundle ID 被自更新写回官方包时抹掉了（退回原版 id，与原版撞车、多开失效）。**与版本无关，`needs_update` 可能为 false**。修复要按版本关系选择，**不能一律 create**（自更新常把副本升到比原版更新的版本，用 create 会从较旧原版重建导致降级）：
     - 副本版本 **高于** 原版（`list` 里该副本 `short_version`/`build_version` 大于 `original`）→ `double-wechat adopt <编号>`（收编为新原版）
     - 副本版本 **等于/低于** 原版 → `double-wechat create <编号>`（从原版重建）
-    - 两者都保留登录态与聊天记录（存于独立沙盒容器，不受影响）；修复前若该副本或原版正在运行，建议先退出
+    - 两者都保留登录态与聊天记录（存于独立沙盒容器，不受影响）；`create` / `adopt` 会自动强制退出相关正在运行的实例（按可执行文件路径精确退出，不会误杀撞车的原版），无需手动先退
 
 ---
 

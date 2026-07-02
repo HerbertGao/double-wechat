@@ -239,6 +239,7 @@ do_create_instance() {
             return 1
         fi
         log_step "覆盖既有实例 WeChat${number}.app..."
+        force_quit_instance "$target_app"   # 覆盖前强制退出，避免 rm -rf/重签一个正在运行的副本
         rm -rf "$target_app" || { log_error "删除既有实例失败"; return 1; }
     fi
 
@@ -292,12 +293,22 @@ do_start_instance() {
     return 1
 }
 
-try_quit_instance() {
+# 强制退出指定 app 的所有进程。按「可执行文件路径」匹配，绝不用 bundle id——
+# 被自更新回退的副本 id 与原版撞车，按 id 退会误杀正在运行的原版微信。
+# 先 SIGTERM 给约 3 秒优雅退出窗口（让其落盘），仍在则 SIGKILL。
+force_quit_instance() {
     local app="$1"
-    local bid; bid=$(get_app_bundle_id "$app")
-    if [[ -n "$bid" ]]; then
-        osascript -e "tell application id \"${bid}\" to quit" >/dev/null 2>&1 || true
-        sleep 1
+    local pat="${app}/Contents/MacOS/WeChat"
+    pgrep -f "$pat" >/dev/null 2>&1 || return 0
+    log_step "退出正在运行的 $(basename "$app")..."
+    pkill -TERM -f "$pat" 2>/dev/null || true
+    local i=0
+    while pgrep -f "$pat" >/dev/null 2>&1 && (( i < 15 )); do
+        sleep 0.2; i=$((i + 1))
+    done
+    if pgrep -f "$pat" >/dev/null 2>&1; then
+        pkill -KILL -f "$pat" 2>/dev/null || true
+        sleep 0.3
     fi
 }
 
@@ -313,7 +324,7 @@ do_delete_instance() {
         print_migration_hint "\"$target_app\""
         return 1
     fi
-    try_quit_instance "$target_app"
+    force_quit_instance "$target_app"
     if rm -rf "$target_app"; then
         log_info "WeChat${number}.app 已删除"
         return 0
@@ -714,7 +725,6 @@ cmd_update() {
     local updated=0 failed=0
     for app in "${targets[@]}"; do
         local n; n=$(extract_number_from_app "$app")
-        try_quit_instance "$app"
         if do_create_instance "$n"; then
             ((updated++))
         else
@@ -817,9 +827,9 @@ cmd_adopt() {
         fi
     fi
 
-    # 退出原版与候选实例（二者当前 bundle id 可能相同，重复 quit 无害）
-    try_quit_instance "$ORIGINAL_WECHAT"
-    try_quit_instance "$candidate"
+    # 退出原版与候选实例（按可执行文件路径精确退出；二者 bundle id 可能相同，故绝不按 id 退）
+    force_quit_instance "$ORIGINAL_WECHAT"
+    force_quit_instance "$candidate"
 
     # 第一步：候选 → 原版。先拷到临时目录再 mv，尽量缩小「原版缺失」窗口。
     log_step "用 ${cand_name} 覆盖原始 WeChat.app..."
@@ -1062,7 +1072,7 @@ startup_brand_check() {
     for app in "${mism[@]}"; do
         print_brand_mismatch "$app" "$ov" "$ob"
     done
-    printf '%s修复前若该副本或原版正在运行请先退出；修复后登录态与聊天记录保留（存于独立容器）%s\n' "$YELLOW" "$NC" >&2
+    printf '%s修复命令会自动退出相关实例后从原版重建；登录态与聊天记录保留（存于独立容器，不受影响）%s\n' "$YELLOW" "$NC" >&2
 }
 
 interactive_main() {
