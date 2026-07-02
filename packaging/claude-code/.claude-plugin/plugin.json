@@ -1,6 +1,6 @@
 {
   "name": "double-wechat",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Manage multiple WeChat instances on macOS via natural language. Provides /double-wechat:* slash commands and a Skill description; all writes run unprivileged.",
   "author": {
     "name": "HerbertGao",
@@ -15,5 +15,5 @@
     "multi-instance",
     "skill"
   ],
-  "minimum_double_wechat_version": "2.1.0"
+  "minimum_double_wechat_version": "2.1.1"
 }

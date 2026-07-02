@@ -24,7 +24,7 @@
 
 set -uo pipefail
 
-readonly VERSION="2.1.0"
+readonly VERSION="2.1.1"
 
 # ----- 配置 -----
 readonly ORIGINAL_WECHAT="/Applications/WeChat.app"
