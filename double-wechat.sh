@@ -180,12 +180,24 @@ brand_fix_hint() {
     n=$(extract_number_from_app "$app")
     v=$(get_app_version "$app"); b=$(get_app_build "$app")
     cmp=$(version_compare "$v" "$b" "$ov" "$ob")
-    # 仅当副本确实更新、且原版版本可读时才推荐 adopt——原版版本读不出时 adopt 会拒绝执行，退回 create
-    if [[ "$cmp" == "1" && ( -n "$ov" || -n "$ob" ) ]]; then
+    # 仅当副本确实更新、且原版版本完整可读时才推荐 adopt：任一版本字段缺失都无法可靠判断新旧，
+    # 且原版版本读不出时 adopt 本就会拒绝执行——一律退回安全的 create。
+    if [[ "$cmp" == "1" && -n "$ov" && -n "$ob" ]]; then
         echo "double-wechat adopt ${n}   # 副本较新，收编为原版（create 会降级）"
     else
         echo "double-wechat create ${n}"
     fi
+}
+
+# 打印单个「改名被回退」副本的报告行：现值/应为 + 版本安全的修复命令。
+# doctor 与 startup 共用，避免两处重复维护同一格式。
+print_brand_mismatch() {
+    local app="$1" ov="$2" ob="$3"
+    local n bid
+    n=$(extract_number_from_app "$app")
+    bid=$(get_app_bundle_id "$app")
+    printf "  • %s: 现为 %s，应为 %s%s%s\n" "$(basename "$app")" "$bid" "$GREEN" "${ORIGINAL_BUNDLE_ID}${n}" "$NC" >&2
+    printf "    修复：%s\n" "$(brand_fix_hint "$app" "$ov" "$ob")" >&2
 }
 
 # 判断 app 是否为「干净的官方 WeChat bundle」——带正规腾讯签名（非 adhoc）、
@@ -445,11 +457,7 @@ cmd_doctor() {
         log_warn "检测到 ${brand_count} 个实例的 Bundle ID 被自更新回退（与编号不符，多开会失效）："
         local bapp
         for bapp in "${brand_apps[@]}"; do
-            local bn bbid
-            bn=$(extract_number_from_app "$bapp")
-            bbid=$(get_app_bundle_id "$bapp")
-            echo "  • $(basename "$bapp"): 现为 ${bbid}，应为 ${ORIGINAL_BUNDLE_ID}${bn}" >&2
-            echo "    修复：$(brand_fix_hint "$bapp" "$original_version" "$original_build")" >&2
+            print_brand_mismatch "$bapp" "$original_version" "$original_build"
         done
         log_warn "修复后登录态与聊天记录保留（存于独立沙盒容器，不受影响）"
     fi
@@ -1052,11 +1060,7 @@ startup_brand_check() {
 
     printf '\n%s检测到 %d 个实例的 Bundle ID 被自更新回退（与原版撞车，多开会失效）%s\n' "$YELLOW" "${#mism[@]}" "$NC" >&2
     for app in "${mism[@]}"; do
-        local n bid
-        n=$(extract_number_from_app "$app")
-        bid=$(get_app_bundle_id "$app")
-        printf "  • %s: 现为 %s，应为 %s%s%s\n" "$(basename "$app")" "$bid" "$GREEN" "${ORIGINAL_BUNDLE_ID}${n}" "$NC" >&2
-        printf "    修复：%s\n" "$(brand_fix_hint "$app" "$ov" "$ob")" >&2
+        print_brand_mismatch "$app" "$ov" "$ob"
     done
     printf '%s修复前若该副本或原版正在运行请先退出；修复后登录态与聊天记录保留（存于独立容器）%s\n' "$YELLOW" "$NC" >&2
 }
