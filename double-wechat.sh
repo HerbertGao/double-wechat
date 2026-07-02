@@ -293,12 +293,14 @@ do_start_instance() {
     return 1
 }
 
-# 强制退出指定 app 的所有进程。按「可执行文件路径」匹配，绝不用 bundle id——
-# 被自更新回退的副本 id 与原版撞车，按 id 退会误杀正在运行的原版微信。
-# 先 SIGTERM 给约 3 秒优雅退出窗口（让其落盘），仍在则 SIGKILL。
+# 强制退出指定 app 的所有进程。按「可执行文件路径」匹配（锚定命令行开头 ^ 并转义 .），
+# 只命中可执行文件即该副本的进程，不误伤仅在参数里出现该路径的无关进程（如 less/编辑器）；
+# 绝不用 bundle id——被自更新回退的副本 id 与原版撞车，按 id 退会误杀正在运行的原版微信。
+# 先 SIGTERM 并等待其退出（最多 ~3 秒），仍在则 SIGKILL。（聊天数据在独立容器、WCDB 崩溃安全，
+# 强退不致损坏；SIGTERM 不保证 GUI 优雅退出，故不承诺落盘。）
 force_quit_instance() {
     local app="$1"
-    local pat="${app}/Contents/MacOS/WeChat"
+    local pat="^${app//./\\.}/Contents/MacOS/WeChat"
     pgrep -f "$pat" >/dev/null 2>&1 || return 0
     log_step "退出正在运行的 $(basename "$app")..."
     pkill -TERM -f "$pat" 2>/dev/null || true
