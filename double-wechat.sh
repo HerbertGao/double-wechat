@@ -31,6 +31,14 @@ readonly ORIGINAL_WECHAT="/Applications/WeChat.app"
 readonly ORIGINAL_BUNDLE_ID="com.tencent.xinWeChat"
 readonly TARGET_DIR="/Applications"
 
+# 提示里让用户键入的命令名：装进 PATH 就用 double-wechat，否则回退到实际调用路径（bash double-wechat.sh
+# 时 $0 是纯文件名，补 ./ 方可直接运行）。仅影响提示文案；自动修复走脚本内函数，与是否安装无关。
+if command -v double-wechat >/dev/null 2>&1; then
+    readonly SELF="double-wechat"
+else
+    case "$0" in */*) readonly SELF="$0";; *) readonly SELF="./$0";; esac
+fi
+
 # ----- 颜色（仅 stderr 是 tty 时启用）-----
 if [[ -t 2 ]]; then
     RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
@@ -171,21 +179,27 @@ scan_brand_mismatched_instances() {
     done < <(scan_instances)
 }
 
-# 给「改名被回退」的副本一条正确的修复命令：副本版本高于原版（自更新常见）时用 adopt
-# 收编为新原版——用 create 会从较旧原版重建导致降级；版本相同/更旧时用 create 重建。
-# 参数：app 路径、原版 short_version、原版 build。
+# 决定「改名被回退」副本的修复动作，echo adopt/create：副本比原版新且原版版本可读 → adopt 收编为新原版
+#（用 create 会从较旧原版重建导致降级）；否则 → create 重建。hint 与 startup 自动修复共用，保持决策一致。
+brand_fix_action() {
+    local app="$1" ov="$2" ob="$3"
+    local v b
+    v=$(get_app_version "$app"); b=$(get_app_build "$app")
+    if [[ "$(version_compare "$v" "$b" "$ov" "$ob")" == "1" && -n "$ov" && -n "$ob" ]]; then
+        echo adopt
+    else
+        echo create
+    fi
+}
+
+# 给「改名被回退」的副本一条正确的修复命令（doctor 用；startup 会直接执行对应命令）。
 brand_fix_hint() {
     local app="$1" ov="$2" ob="$3"
-    local n v b cmp
-    n=$(extract_number_from_app "$app")
-    v=$(get_app_version "$app"); b=$(get_app_build "$app")
-    cmp=$(version_compare "$v" "$b" "$ov" "$ob")
-    # 仅当副本确实更新、且原版版本完整可读时才推荐 adopt：任一版本字段缺失都无法可靠判断新旧，
-    # 且原版版本读不出时 adopt 本就会拒绝执行——一律退回安全的 create。
-    if [[ "$cmp" == "1" && -n "$ov" && -n "$ob" ]]; then
-        echo "double-wechat adopt ${n}   # 副本较新，收编为原版（create 会降级）"
+    local n; n=$(extract_number_from_app "$app")
+    if [[ "$(brand_fix_action "$app" "$ov" "$ob")" == adopt ]]; then
+        echo "$SELF adopt ${n}   # 副本较新，收编为原版（create 会降级）"
     else
-        echo "double-wechat create ${n}"
+        echo "$SELF create ${n}"
     fi
 }
 
@@ -555,7 +569,7 @@ cmd_list() {
         echo
         echo "共 ${count} 个实例"
         if [[ $needs_count -gt 0 ]]; then
-            printf "%s提示: 有 %d 个实例需要更新，可运行 'double-wechat update --all'%s\n" "$YELLOW" "$needs_count" "$NC"
+            printf "%s提示: 有 %d 个实例需要更新，可运行 '%s update --all'%s\n" "$YELLOW" "$needs_count" "$SELF" "$NC"
         fi
     fi
     echo
@@ -572,7 +586,7 @@ cmd_create() {
             *) [[ -z "$number" ]] && number="$1" || { log_error "多余参数: $1"; return 2; }; shift;;
         esac
     done
-    [[ -z "$number" ]] && { log_error "用法: double-wechat create <0-9> [--no-launch] [--yes]"; return 2; }
+    [[ -z "$number" ]] && { log_error "用法: $SELF create <0-9> [--no-launch] [--yes]"; return 2; }
     validate_number "$number" || return 2
     require_original_wechat || return 1
 
@@ -597,7 +611,7 @@ cmd_create() {
 cmd_start() {
     require_unprivileged || return 1
     local number="${1:-}"
-    [[ -z "$number" ]] && { log_error "用法: double-wechat start <0-9>"; return 2; }
+    [[ -z "$number" ]] && { log_error "用法: $SELF start <0-9>"; return 2; }
     validate_number "$number" || return 2
     do_start_instance "$number"
 }
@@ -612,7 +626,7 @@ cmd_delete() {
             *) [[ -z "$number" ]] && number="$1" || { log_error "多余参数: $1"; return 2; }; shift;;
         esac
     done
-    [[ -z "$number" ]] && { log_error "用法: double-wechat delete <0-9> [--yes]"; return 2; }
+    [[ -z "$number" ]] && { log_error "用法: $SELF delete <0-9> [--yes]"; return 2; }
     validate_number "$number" || return 2
 
     local target_app="${TARGET_DIR}/WeChat${number}.app"
@@ -667,7 +681,7 @@ cmd_update() {
             fi
         done < <(scan_instances)
     else
-        [[ ${#nums[@]} -eq 0 ]] && { log_error "用法: double-wechat update [--all | <n>...] [--yes]"; return 2; }
+        [[ ${#nums[@]} -eq 0 ]] && { log_error "用法: $SELF update [--all | <n>...] [--yes]"; return 2; }
         local n
         for n in "${nums[@]}"; do
             validate_number "$n" || return 2
@@ -792,7 +806,7 @@ cmd_adopt() {
     # 校验 1：候选必须确实比原版新
     if [[ "$(version_compare "$cand_v" "$cand_b" "$original_version" "$original_build")" != "1" ]]; then
         log_error "${cand_name}（$(format_version_info "$cand_v" "$cand_b")）不比原版（$(format_version_info "$original_version" "$original_build")）新，无需 adopt"
-        log_error "若只是想把它同步到原版，请用: double-wechat update ${cand_n}"
+        log_error "若只是想把它同步到原版，请用: $SELF update ${cand_n}"
         return 1
     fi
 
@@ -857,7 +871,7 @@ cmd_adopt() {
     log_step "重新打包 ${cand_name}..."
     if ! do_create_instance "$cand_n"; then
         log_error "重新打包 ${cand_name} 失败"
-        log_error "原版已更新成功，但 ${cand_name} 未重建；请运行: double-wechat create ${cand_n}"
+        log_error "原版已更新成功，但 ${cand_name} 未重建；请运行: $SELF create ${cand_n}"
         return 1
     fi
 
@@ -877,7 +891,7 @@ cmd_adopt() {
         fi
     done < <(scan_instances)
     if [[ ${#stale[@]} -gt 0 ]]; then
-        log_warn "另有 ${#stale[@]} 个副本版本落后于新原版，建议运行: double-wechat update --all"
+        log_warn "另有 ${#stale[@]} 个副本版本落后于新原版，建议运行: $SELF update --all"
     fi
 }
 
@@ -934,19 +948,19 @@ cmd_help() {
 double-wechat v${VERSION} — macOS 微信多开管理工具
 
 用法:
-  double-wechat                                     # 交互菜单（人类入口）
-  double-wechat list [--json]                       # 列出所有实例
-  double-wechat create <0-9> [--no-launch] [--yes] # 创建（默认创建后启动）
-  double-wechat start <0-9>                         # 启动指定实例
-  double-wechat delete <0-9> [--yes]                # 删除指定实例
-  double-wechat update [--all | <n>...] [--yes]     # 同步副本到原始版本
-  double-wechat adopt [<0-9>] [--yes]               # 收编自更新的较新副本为原版
-  double-wechat doctor [--json]                     # 自检环境
-  double-wechat help                                # 显示本帮助
-  double-wechat version                             # 显示版本
+  ${SELF}                                     # 交互菜单（人类入口）
+  ${SELF} list [--json]                       # 列出所有实例
+  ${SELF} create <0-9> [--no-launch] [--yes] # 创建（默认创建后启动）
+  ${SELF} start <0-9>                         # 启动指定实例
+  ${SELF} delete <0-9> [--yes]                # 删除指定实例
+  ${SELF} update [--all | <n>...] [--yes]     # 同步副本到原始版本
+  ${SELF} adopt [<0-9>] [--yes]               # 收编自更新的较新副本为原版
+  ${SELF} doctor [--json]                     # 自检环境
+  ${SELF} help                                # 显示本帮助
+  ${SELF} version                             # 显示版本
 
 所有写操作均不需要 sudo（前提：当前用户在 admin 组且 /Applications 可写）。
-若需要确认环境是否满足，运行: double-wechat doctor
+若需要确认环境是否满足，运行: ${SELF} doctor
 EOF
 }
 
@@ -1049,19 +1063,23 @@ startup_version_check() {
         printf "  • %s (%s) — %s\n" "$(basename "$app")" "$(format_version_info "$v" "$b")" "$tag" >&2
     done
     echo >&2
-    read -p "是否一键同步到最新版本？(y/n，默认: y): " confirm || confirm=n
+    # 非交互 stdin 不自动触发破坏性同步（与 cmd_* 的 [[ -t 0 ]] 一致；默认 y 不该被管道里的空行接受）
+    if [[ ! -t 0 ]]; then log_info "非交互模式下跳过同步"; return 0; fi
+    read -rp "是否一键同步到最新版本？(y/n，默认: y): " confirm || confirm=n
     [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过同步"; return 0; }
     cmd_sync --yes
 }
 
-# 启动时立即检测 bundle id 被自更新回退的副本（版本检查漏掉的那类，尤其版本与原版相同时）。
-# 只检测 + 给出正确的修复命令，不自动修复：修复需按版本关系在 adopt/create 间选择（避免降级），
-# 且回退副本的 id 与原版撞车、自动重建可能误伤正在运行的原版微信——故交由用户按提示手动执行。
+# 启动时立即检测 bundle id 被自更新回退的副本（版本检查漏掉的那类，尤其版本与原版相同时），
+# 确认后自动修复：按版本关系在 adopt（副本较新，收编为原版）/create（从原版重建）间选择，避免降级。
+# 两者都会先精确退出相关实例（按可执行文件路径，绝不按 id，避免误杀正在运行的原版微信）再重建。
 startup_brand_check() {
     [[ -d "$ORIGINAL_WECHAT" ]] || return 0
     local ov ob
     ov=$(get_app_version "$ORIGINAL_WECHAT")
     ob=$(get_app_build "$ORIGINAL_WECHAT")
+    # 原版版本读不出则无法可靠判断新旧（与 startup_version_check / cmd_adopt / cmd_update 一致），跳过
+    [[ -z "$ov" && -z "$ob" ]] && return 0
     local mism=()
     local app
     while IFS= read -r app; do
@@ -1070,11 +1088,40 @@ startup_brand_check() {
     done < <(scan_brand_mismatched_instances)
     [[ ${#mism[@]} -eq 0 ]] && return 0
 
-    printf '\n%s检测到 %d 个实例的 Bundle ID 被自更新回退（与原版撞车，多开会失效）%s\n' "$YELLOW" "${#mism[@]}" "$NC" >&2
+    printf '\n%s检测到 %d 个实例的 Bundle ID 被回退，多开会失效%s\n' "$YELLOW" "${#mism[@]}" "$NC" >&2
     for app in "${mism[@]}"; do
-        print_brand_mismatch "$app" "$ov" "$ob"
+        local n bid tag
+        n=$(extract_number_from_app "$app")
+        bid=$(get_app_bundle_id "$app")
+        if [[ "$(brand_fix_action "$app" "$ov" "$ob")" == adopt ]]; then
+            tag="收编为原版"
+        else
+            tag="从原版重建"
+        fi
+        printf "  • %s：%s → %s%s%s（%s）\n" "$(basename "$app")" "$bid" "$GREEN" "${ORIGINAL_BUNDLE_ID}${n}" "$NC" "$tag" >&2
     done
-    printf '%s修复命令会自动退出相关实例后从原版重建；登录态与聊天记录保留（存于独立容器，不受影响）%s\n' "$YELLOW" "$NC" >&2
+    printf '%s修复会退出相关微信后重建，登录态与聊天记录保留%s\n' "$YELLOW" "$NC" >&2
+    echo >&2
+    # 非交互 stdin 不自动触发破坏性修复（cmd_adopt/cmd_create 带 --yes 会跳过各自的 [[ -t 0 ]] 确认）
+    if [[ ! -t 0 ]]; then log_info "非交互模式下跳过自动修复"; return 0; fi
+    read -rp "是否自动修复？(y/n，默认: y): " confirm || confirm=n
+    [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过修复"; return 0; }
+
+    # 每轮重读原版版本：前一个 adopt 会提升原版，用陈旧基线会把同版本副本误判为可 adopt 而被 cmd_adopt 拒绝；
+    # 重读后同版本副本正确落到 create（不降级）。adopt 被拒（副本非干净官方 bundle / 归属他人）时退回 create。
+    local failed=()
+    for app in "${mism[@]}"; do
+        local n; n=$(extract_number_from_app "$app")
+        ov=$(get_app_version "$ORIGINAL_WECHAT")
+        ob=$(get_app_build "$ORIGINAL_WECHAT")
+        if [[ "$(brand_fix_action "$app" "$ov" "$ob")" == adopt ]]; then
+            cmd_adopt "$n" --yes || cmd_create "$n" --yes --no-launch || failed+=("$n")
+        else
+            cmd_create "$n" --yes --no-launch || failed+=("$n")
+        fi
+    done
+    [[ ${#failed[@]} -gt 0 ]] && log_warn "以下实例修复失败，仍需手动处理: ${failed[*]}"
+    return 0
 }
 
 interactive_main() {
