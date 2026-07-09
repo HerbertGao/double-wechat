@@ -1063,7 +1063,9 @@ startup_version_check() {
         printf "  • %s (%s) — %s\n" "$(basename "$app")" "$(format_version_info "$v" "$b")" "$tag" >&2
     done
     echo >&2
-    read -p "是否一键同步到最新版本？(y/n，默认: y): " confirm || confirm=n
+    # 非交互 stdin 不自动触发破坏性同步（与 cmd_* 的 [[ -t 0 ]] 一致；默认 y 不该被管道里的空行接受）
+    if [[ ! -t 0 ]]; then log_info "非交互模式下跳过同步"; return 0; fi
+    read -rp "是否一键同步到最新版本？(y/n，默认: y): " confirm || confirm=n
     [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过同步"; return 0; }
     cmd_sync --yes
 }
@@ -1100,7 +1102,9 @@ startup_brand_check() {
     done
     printf '%s修复会退出相关微信后重建，登录态与聊天记录保留%s\n' "$YELLOW" "$NC" >&2
     echo >&2
-    read -p "是否自动修复？(y/n，默认: y): " confirm || confirm=n
+    # 非交互 stdin 不自动触发破坏性修复（cmd_adopt/cmd_create 带 --yes 会跳过各自的 [[ -t 0 ]] 确认）
+    if [[ ! -t 0 ]]; then log_info "非交互模式下跳过自动修复"; return 0; fi
+    read -rp "是否自动修复？(y/n，默认: y): " confirm || confirm=n
     [[ "$confirm" =~ ^[Nn]$ ]] && { log_info "已跳过修复"; return 0; }
 
     # 每轮重读原版版本：前一个 adopt 会提升原版，用陈旧基线会把同版本副本误判为可 adopt 而被 cmd_adopt 拒绝；
