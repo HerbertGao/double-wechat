@@ -1,6 +1,6 @@
 {
   "name": "double-wechat",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "interface": {
     "displayName": "Double WeChat",
     "shortDescription": "Self-hosted Codex CLI marketplace for double-wechat.",

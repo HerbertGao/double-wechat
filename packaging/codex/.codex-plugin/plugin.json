@@ -1,6 +1,6 @@
 {
   "name": "double-wechat",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Manage multiple WeChat instances on macOS via natural language.",
   "author": {
     "name": "HerbertGao",
