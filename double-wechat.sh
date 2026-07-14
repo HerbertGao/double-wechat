@@ -242,9 +242,19 @@ print_migration_hint() {
 # 重建失败时回滚：删掉半成品，把备份换回原位。永远返回 1，供调用方 `rollback_instance ... ; return $?` 使用。
 rollback_instance() {
     local target_app="$1" backup="$2"
+    # 半成品必须先彻底消失：目标目录若残留，mv 会把备份塞进它内部（WeChatN.app/.WeChatN.app.bak）而非替换它
     rm -rf "$target_app"
-    if [[ -d "$backup" ]] && mv "$backup" "$target_app"; then
-        log_warn "已回滚：$(basename "$target_app") 保持原样（版本未变，仍可正常使用）"
+    if [[ -e "$target_app" ]]; then
+        log_error "清理半成品失败: $target_app"
+        [[ -e "$backup" ]] && log_error "原实例备份仍在 $backup —— 手动改名回 $target_app 即可恢复"
+        return 1
+    fi
+    if [[ -e "$backup" ]]; then
+        if mv "$backup" "$target_app"; then
+            log_warn "已回滚：$(basename "$target_app") 保持原样（版本未变，仍可正常使用）"
+        else
+            log_error "回滚失败：原实例备份仍在 $backup —— 手动改名回 $target_app 即可恢复"
+        fi
     fi
     return 1
 }
@@ -258,7 +268,13 @@ do_create_instance() {
 
     log_step "创建 WeChat${number}.app..."
 
-    rm -rf "$backup"   # 清理上次异常中断留下的孤儿备份（bundle 内无用户数据，删了不可惜）
+    # 清理上次异常中断留下的孤儿备份（bundle 内无用户数据，删了不可惜）。必须删净：备份目录若残留，
+    # 下面的 mv 会把既有实例塞进它内部（.WeChatN.app.bak/WeChatN.app），实例就此「消失」
+    rm -rf "$backup"
+    if [[ -e "$backup" ]]; then
+        log_error "无法清理残留备份: $backup（请手动删除后重试）"
+        return 1
+    fi
     if [[ -d "$target_app" ]]; then
         if ! is_owned_by_current_user "$target_app"; then
             log_error "无法覆盖 WeChat${number}.app：该实例归非当前用户所有（典型为旧版 sudo 创建）"
