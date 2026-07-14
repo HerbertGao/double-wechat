@@ -239,13 +239,26 @@ print_migration_hint() {
 # 核心操作（无 sudo）
 # ============================================================
 
+# 重建失败时回滚：删掉半成品，把备份换回原位。永远返回 1，供调用方 `rollback_instance ... ; return $?` 使用。
+rollback_instance() {
+    local target_app="$1" backup="$2"
+    rm -rf "$target_app"
+    if [[ -d "$backup" ]] && mv "$backup" "$target_app"; then
+        log_warn "已回滚：$(basename "$target_app") 保持原样（版本未变，仍可正常使用）"
+    fi
+    return 1
+}
+
 do_create_instance() {
     local number="$1"
     local target_app="${TARGET_DIR}/WeChat${number}.app"
     local new_bundle_id="${ORIGINAL_BUNDLE_ID}${number}"
+    # 同卷 mv，瞬时且不占额外空间；带前导点，不会被 scan_instances（WeChat[0-9].app）扫到
+    local backup="${TARGET_DIR}/.WeChat${number}.app.bak"
 
     log_step "创建 WeChat${number}.app..."
 
+    rm -rf "$backup"   # 清理上次异常中断留下的孤儿备份（bundle 内无用户数据，删了不可惜）
     if [[ -d "$target_app" ]]; then
         if ! is_owned_by_current_user "$target_app"; then
             log_error "无法覆盖 WeChat${number}.app：该实例归非当前用户所有（典型为旧版 sudo 创建）"
@@ -253,21 +266,27 @@ do_create_instance() {
             return 1
         fi
         log_step "覆盖既有实例 WeChat${number}.app..."
-        force_quit_instance "$target_app"   # 覆盖前强制退出，避免 rm -rf/重签一个正在运行的副本
-        rm -rf "$target_app" || { log_error "删除既有实例失败"; return 1; }
+        force_quit_instance "$target_app"   # 覆盖前强制退出，避免搬走/重签一个正在运行的副本
+        # 先搬走而不是删除：后续任一步骤失败都能把旧实例原样换回来，不至于「签名失败 → 实例消失」
+        mv "$target_app" "$backup" || { log_error "移走既有实例失败"; return 1; }
     fi
 
     if ! cp -R "$ORIGINAL_WECHAT" "$target_app"; then
         log_error "复制微信应用失败"
-        return 1
+        rollback_instance "$target_app" "$backup"; return $?
     fi
     log_info "应用复制完成"
+
+    # 清掉 bundle 根目录下除 Contents 外的杂物（典型来源：微信自更新器在原版根目录留下的临时文件/目录，
+    # 恰好被 cp -R 一起复制过来）。这类文件会让 codesign 直接失败并报
+    # "unsealed contents present in the bundle root"（实测：任何非点开头的文件/目录都会触发）。
+    # 合法 .app 根目录只有 Contents。
+    find "$target_app" -mindepth 1 -maxdepth 1 ! -name Contents -exec rm -rf {} +
 
     log_step "修改应用标识符..."
     if ! /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $new_bundle_id" "$target_app/Contents/Info.plist"; then
         log_error "修改 Bundle Identifier 失败"
-        rm -rf "$target_app"
-        return 1
+        rollback_instance "$target_app" "$backup"; return $?
     fi
     log_info "标识符: $new_bundle_id"
 
@@ -275,15 +294,14 @@ do_create_instance() {
     local sign_out
     if ! sign_out=$(codesign --force --deep --sign - "$target_app" 2>&1); then
         log_error "应用签名失败: $sign_out"
-        rm -rf "$target_app"
-        return 1
+        rollback_instance "$target_app" "$backup"; return $?
     fi
     if ! codesign --verify --deep "$target_app" 2>/dev/null; then
         log_error "签名校验失败"
-        rm -rf "$target_app"
-        return 1
+        rollback_instance "$target_app" "$backup"; return $?
     fi
     log_info "应用签名完成"
+    rm -rf "$backup"
 }
 
 do_start_instance() {
