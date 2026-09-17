@@ -85,9 +85,9 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 - `sudo_required: true` → 不要尝试 sudo，建议用户从 macOS"系统设置 → 用户与群组"把当前用户加入 admin 组
 - `legacy_migration_required: true` → **不要替用户执行 sudo**。把 `migration_hint` 字段中的命令原样展示给用户，告诉用户这是从旧版升级时的一次性迁移，让用户在他自己的终端里手动跑。跑完之后再调任何写操作
 - `brand_mismatch_required: true` → 该副本的 Bundle ID 被自更新写回官方包时抹掉了（退回原版 id，与原版撞车、多开失效）。**与版本无关，`needs_update` 可能为 false**。修复要按版本关系选择，**不能一律 create**（自更新常把副本升到比原版更新的版本，用 create 会从较旧原版重建导致降级）：
-    - 副本版本 **高于** 原版（`list` 里该副本 `short_version`/`build_version` 大于 `original`）→ `double-wechat adopt <编号>`（收编为新原版）
-    - 副本版本 **等于/低于** 原版，**或原版版本读不出**（此时 adopt 会拒绝执行）→ `double-wechat create <编号>`（从原版重建）
-    - 两者都保留登录态与聊天记录（存于独立沙盒容器，不受影响）；`create` / `adopt` 会自动强制退出相关正在运行的实例（按可执行文件路径精确退出，不会误杀撞车的原版），无需手动先退
+  - 副本版本 **高于** 原版（`list` 里该副本 `short_version`/`build_version` 大于 `original`）→ `double-wechat adopt <编号>`（收编为新原版）
+  - 副本版本 **等于/低于** 原版，**或原版版本读不出**（此时 adopt 会拒绝执行）→ `double-wechat create <编号>`（从原版重建）
+  - 两者都保留登录态与聊天记录（存于独立沙盒容器，不受影响）；`create` / `adopt` 会自动强制退出相关正在运行的实例（按可执行文件路径精确退出，不会误杀撞车的原版），无需手动先退
 
 ---
 
@@ -141,7 +141,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 | `<n>` | `0-9` 单个数字 | 实例编号 |
 
 | 选项 | 说明 |
-|---|---|
+| --- | --- |
 | `--no-launch` | 仅创建，不启动 |
 | `--yes` / `-y` | **Agent 必加**：覆盖已有同号实例时跳过交互确认；非交互环境下未传此参数会失败 |
 
@@ -193,7 +193,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 **参数**：
 
 | 形式 | 说明 |
-|---|---|
+| --- | --- |
 | `--all` | 更新所有 `needs_update: true` 的实例 |
 | `<n>...` | 显式指定编号列表，如 `update 0 2 3` |
 | `--yes` / `-y` | **Agent 必加**：跳过交互确认 |
@@ -216,7 +216,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 **参数**：
 
 | 形式 | 说明 |
-|---|---|
+| --- | --- |
 | `<n>` | 显式指定要收编的副本编号 `0-9` |
 | 无编号 | 自动挑选版本最高、且比原版新的副本；无此类副本时输出提示并退出 0 |
 | `--yes` / `-y` | **Agent 必加**：跳过交互确认；非交互环境下未传此参数会失败 |
@@ -251,7 +251,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 ## 调用约定总览
 
 | 项 | 约定 |
-|---|---|
+| --- | --- |
 | 协议 | 纯 shell 子命令（无 MCP / 无 socket） |
 | 数据输出 | stdout，`--json` 模式下为单行 JSON |
 | 日志输出 | stderr，可被 Agent 安全忽略 |
