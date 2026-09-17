@@ -1,7 +1,7 @@
 ---
 name: double-wechat
 description: Manage multiple WeChat instances on macOS via natural language — list / create / start / delete / update / adopt copies of WeChat.app. All operations run as the current user (no sudo required when the user is in the admin group). Backed by a local `double-wechat` shell binary.
-min_binary_version: 2.1.3
+min_binary_version: 2.2.0
 ---
 
 # double-wechat Skill
@@ -31,7 +31,7 @@ min_binary_version: 2.1.3
 - `/Applications/WeChat.app` 已正确安装
 - Xcode 命令行工具（`xcode-select --install`）：create/update/adopt 重建副本时要编译 Team ID 补丁（微信 4.1.15+ 的副本缺它会启动即崩溃）；缺失时这些命令会在动任何实例之前报错退出
 - 当前用户必须在 `admin` 组、且 `/Applications` 可写（绝大多数 macOS 用户默认满足；不满足时 `doctor` 会明确报告）
-- `double-wechat` 可执行文件 **≥ 2.1.3** 且在 `PATH` 中
+- `double-wechat` 可执行文件 **≥ 2.2.0** 且在 `PATH` 中
   - 仓库根目录的 `double-wechat.sh` 可直接软链：`ln -s "$PWD/double-wechat.sh" /usr/local/bin/double-wechat`
 
 > Skill 发行物按 host 注册（Claude Code skill / Codex CLI plugin）；具体注册路径与命令见仓库 README。本文件保持 host-agnostic。
@@ -56,7 +56,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 ```jsonc
 {
-  "version": "2.1.3",
+  "version": "2.2.0",
   "in_admin_group": true,
   "applications_writable": true,
   "original_wechat_present": true,
