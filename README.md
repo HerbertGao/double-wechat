@@ -14,7 +14,7 @@
 | 收编 (adopt) | 副本自更新后版本反超原版时，把它提升为新原版，避免被降级 |
 | 环境自检 (doctor) | 检查是否能无 sudo 运行 |
 
-每个实例约占 150–200MB 磁盘。需要 macOS 12+ 与已安装的 `/Applications/WeChat.app`。
+每个实例约占 150–200MB 磁盘。需要 macOS 12+、已安装的 `/Applications/WeChat.app`，以及 Xcode 命令行工具（`xcode-select --install`，创建副本时编译 Team ID 补丁用）。
 
 ---
 
@@ -155,8 +155,15 @@ double-wechat update --all --yes                                   # 更新所�
 
 1. `cp -R /Applications/WeChat.app /Applications/WeChat<n>.app`（副本归当前用户）
 2. `PlistBuddy -c "Set :CFBundleIdentifier com.tencent.xinWeChat<n>" .../Info.plist`
-3. `codesign --force --deep --sign - /Applications/WeChat<n>.app`（adhoc 签名）
-4. `nohup .../Contents/MacOS/WeChat &` 启动
+3. 编译 Team ID 补丁放进 `Contents/Frameworks/`，并写入 `Info.plist` 的 `LSEnvironment`（见下）
+4. `codesign --force --deep --sign - /Applications/WeChat<n>.app`（adhoc 签名）
+5. 启动（`DYLD_INSERT_LIBRARIES` 带上补丁；Dock / Finder 启动由 `LSEnvironment` 带上）
+
+### Team ID 补丁（微信 4.1.15+）
+
+4.1.15 起，微信加载器会读取自身签名的 Team ID，不是腾讯的 `5A4RE8SF68` 就不加载 `Resources/` 里的真实框架，副本启动即崩溃（`EXC_BAD_ACCESS`，`pc=0`）。adhoc 签名没有 Team ID，而 macOS 会直接杀掉任何冒用他人 Team ID 的签名，所以只能在进程内补：一个 interpose `SecCodeCopySigningInformation` 的十几行 dylib，只给本副本 bundle 内、且缺 Team ID 的代码补上。源码内嵌在 `double-wechat.sh` 的 `build_teamfix` 中。
+
+修复前创建的 4.1.15+ 副本会被 `list` 标为需要更新，`update --all`（或菜单启动时的自检）会自动重建；`start` 会拒绝启动它们。
 
 ### 为什么不需要 sudo
 
