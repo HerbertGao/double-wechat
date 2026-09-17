@@ -251,7 +251,7 @@ rollback_instance() {
     fi
     if [[ -e "$backup" ]]; then
         if mv "$backup" "$target_app"; then
-            log_warn "已回滚：$(basename "$target_app") 保持原样（版本未变，仍可正常使用）"
+            log_warn "已回滚：$(basename "$target_app") 保持原样（版本未变）"
         else
             log_error "回滚失败：原实例备份仍在 $backup —— 手动改名回 $target_app 即可恢复"
         fi
@@ -259,8 +259,78 @@ rollback_instance() {
     return 1
 }
 
+# Team ID 补丁。微信 4.1.15 起，加载器用 SecCodeCopySigningInformation 读自身签名的 Team ID，
+# 不是腾讯的 5A4RE8SF68 就不加载 Resources/ 下的真实框架，随后调用空 stub 崩溃（EXC_BAD_ACCESS, pc=0）。
+# adhoc 重签后 Team ID 必为空，而任何非腾讯签名带上该 Team ID 都会被内核 SIGKILL，只能在进程内补：
+# 给副本放一个 interpose 该函数的小 dylib，经 Info.plist 的 LSEnvironment 注入（Dock/Finder/open 启动生效，
+# 子进程继承）。只给本副本 bundle 内、且缺 Team ID 的代码补，其它代码的签名信息原样返回。
+teamfix_path() { echo "$1/Contents/Frameworks/libdwteamfix.dylib"; }
+
+# 4.1.15+ 的副本缺补丁（修复前创建）→ 启动即崩溃，需重建。更早的版本不需要，不打扰（重建会丢登录态）。
+# 只认本工具改过名的副本：自更新写回的官方包（id 退回原版、腾讯签名、能正常运行）交给 brand check 按版本选 adopt/create，
+# 这里若也算上，会引导对较新副本 update 而降级。
+needs_teamfix() {
+    local n; n=$(extract_number_from_app "$1")
+    [[ -n "$n" && ! -f "$(teamfix_path "$1")" && "$(get_app_bundle_id "$1")" == "${ORIGINAL_BUNDLE_ID}${n}" &&
+       "$(version_compare "$(get_app_version "$1")" "" 4.1.15 "")" != "-1" ]]
+}
+
+# 编译补丁到 <out>，<app> 为它将放入的副本路径（hook 按此前缀限定作用范围）
+build_teamfix() {
+    local out="$1" root
+    # Security 框架报告的是解析过符号链接的真实路径（如 /var → /private/var），前缀须同样解析
+    root=$(cd "$(dirname "$2")" && pwd -P) || return 1
+    root+="/$(basename "$2")/"
+    # 源码须落盘：从 stdin 编译多架构时只有第一个架构读得到源码，其余切片是空的（x86_64 副本照旧崩溃）
+    cat > "$out.c" <<'EOF'
+#include <Security/Security.h>
+#include <limits.h>
+#include <string.h>
+static OSStatus hook(SecStaticCodeRef code, SecCSFlags flags, CFDictionaryRef *info) {
+    OSStatus s = SecCodeCopySigningInformation(code, flags, info);
+    if (s != errSecSuccess || !info || !*info || CFDictionaryContainsKey(*info, kSecCodeInfoTeamIdentifier)) return s;
+    CFURLRef exe = CFDictionaryGetValue(*info, kSecCodeInfoMainExecutable);
+    char path[PATH_MAX];
+    if (!exe || !CFURLGetFileSystemRepresentation(exe, true, (UInt8 *)path, sizeof path)
+        || strncmp(path, DW_BUNDLE, sizeof DW_BUNDLE - 1) != 0) return s;
+    CFMutableDictionaryRef m = CFDictionaryCreateMutableCopy(NULL, 0, *info);
+    if (!m) return s;
+    CFDictionarySetValue(m, kSecCodeInfoTeamIdentifier, CFSTR("5A4RE8SF68"));
+    CFRelease(*info);
+    *info = m;
+    return s;
+}
+__attribute__((used, section("__DATA,__interpose")))
+static const struct { void *replacement, *original; } interpose = { hook, SecCodeCopySigningInformation };
+EOF
+    # TMPDIR 指到输出目录：双架构编译会留下空临时目录，随调用方的临时目录一并删掉
+    if ! TMPDIR="$(dirname "$out")" xcrun clang -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 -Os \
+                     -framework Security -framework CoreFoundation -DDW_BUNDLE="\"$root\"" -o "$out" "$out.c"; then
+        log_error "编译 Team ID 补丁失败（需要 Xcode 命令行工具: xcode-select --install）"
+        return 1
+    fi
+}
+
+# 直接 exec 可执行文件不经 LaunchServices，LSEnvironment 不生效，补丁需手动带上。
+# 没有补丁（原版、旧副本）时不设：dyld 找不到插入的库会直接终止进程。调用方从 $! 取 PID。
+# 不用 nohup：它是 SIP 保护的系统程序，exec 它时 DYLD_* 会被清掉；忽略 HUP 会被 exec 继承，效果同 nohup。
+launch_app() {
+    local fix; fix=$(teamfix_path "$1")
+    (trap '' HUP; [[ -f "$fix" ]] && export DYLD_INSERT_LIBRARIES="$fix"; exec "$1/Contents/MacOS/WeChat") >/dev/null 2>&1 &
+}
+
+# 先编译补丁再动实例：缺命令行工具时要在强退/搬走现有实例之前就失败
 do_create_instance() {
-    local number="$1"
+    local fix_dir rc
+    fix_dir=$(mktemp -d) || return 1
+    build_teamfix "$fix_dir/teamfix.dylib" "${TARGET_DIR}/WeChat${1}.app" && assemble_instance "$1" "$fix_dir/teamfix.dylib"
+    rc=$?
+    rm -rf "$fix_dir"
+    return $rc
+}
+
+assemble_instance() {
+    local number="$1" teamfix="$2"
     local target_app="${TARGET_DIR}/WeChat${number}.app"
     local new_bundle_id="${ORIGINAL_BUNDLE_ID}${number}"
     # 同卷 mv，瞬时且不占额外空间；带前导点，不会被 scan_instances（WeChat[0-9].app）扫到
@@ -306,6 +376,17 @@ do_create_instance() {
     fi
     log_info "标识符: $new_bundle_id"
 
+    # 须在签名前：dylib 与 Info.plist 改动都要被签名封存
+    log_step "注入 Team ID 补丁..."
+    local plist="$target_app/Contents/Info.plist" dest
+    dest=$(teamfix_path "$target_app")
+    /usr/libexec/PlistBuddy -c "Add :LSEnvironment dict" "$plist" 2>/dev/null   # 原版已有该 dict 时沿用
+    if ! { mkdir -p "$(dirname "$dest")" && cp "$teamfix" "$dest" &&
+           /usr/libexec/PlistBuddy -c "Add :LSEnvironment:DYLD_INSERT_LIBRARIES string $dest" "$plist"; }; then
+        log_error "注入 Team ID 补丁失败"
+        rollback_instance "$target_app" "$backup"; return $?
+    fi
+
     log_step "重新签名应用..."
     local sign_out
     if ! sign_out=$(codesign --force --deep --sign - "$target_app" 2>&1); then
@@ -317,6 +398,13 @@ do_create_instance() {
         rollback_instance "$target_app" "$backup"; return $?
     fi
     log_info "应用签名完成"
+
+    # 去掉从原版 cp -R 继承来的隔离标记。原版有腾讯的 Developer ID + 公证票据，带隔离也能过门禁；
+    # 副本被 adhoc 重签后公证失效，隔离标记还在就会弹「Apple 无法验证…是否包含恶意软件」。
+    xattr -dr com.apple.quarantine "$target_app" 2>/dev/null || true
+    # 覆盖重建时 LaunchServices 可能仍缓存旧 Info.plist（无 LSEnvironment），Dock 启动就不带补丁
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$target_app" 2>/dev/null || true
+
     rm -rf "$backup"
 }
 
@@ -330,8 +418,13 @@ do_start_instance() {
         return 1
     fi
 
+    if needs_teamfix "$target_app"; then
+        log_error "WeChat${number}.app 缺少 Team ID 补丁（修复前创建），微信 4.1.15+ 会启动即崩溃；请先运行: $SELF update ${number}"
+        return 1
+    fi
+
     log_step "启动 WeChat${number}..."
-    nohup "$wechat_binary" >/dev/null 2>&1 &
+    launch_app "$target_app"
     local pid=$!
     if [[ -n "$pid" && $pid -gt 0 ]]; then
         log_info "WeChat${number} 启动成功 (PID: $pid)"
@@ -554,7 +647,7 @@ cmd_list() {
             bid=$(get_app_bundle_id "$app")
             needs="false"
             if [[ -n "$original_version" || -n "$original_build" ]]; then
-                if [[ "$inst_v" != "$original_version" || "$inst_b" != "$original_build" ]]; then
+                if [[ "$inst_v" != "$original_version" || "$inst_b" != "$original_build" ]] || needs_teamfix "$app"; then
                     needs="true"
                 fi
             fi
@@ -591,6 +684,9 @@ cmd_list() {
         if [[ -n "$original_version" && -n "$inst_v" ]]; then
             if [[ "$inst_v" != "$original_version" || "$inst_b" != "$original_build" ]]; then
                 status=$(printf '  %s[需要更新: %s → %s]%s' "$RED" "$inst_info" "$original_info" "$NC")
+                ((needs_count++))
+            elif needs_teamfix "$app"; then
+                status=$(printf '  %s[需要更新: 缺 Team ID 补丁]%s' "$RED" "$NC")
                 ((needs_count++))
             fi
         fi
@@ -710,7 +806,7 @@ cmd_update() {
             local v b
             v=$(get_app_version "$app")
             b=$(get_app_build "$app")
-            if [[ "$v" != "$original_version" || "$b" != "$original_build" ]]; then
+            if [[ "$v" != "$original_version" || "$b" != "$original_build" ]] || needs_teamfix "$app"; then
                 targets+=("$app")
             fi
         done < <(scan_instances)
@@ -877,6 +973,10 @@ cmd_adopt() {
         fi
     fi
 
+    # 第二步重打包要编译 Team ID 补丁：没装命令行工具就别先退出微信、替换原版。
+    # ponytail: 只查 clang 能否定位，编译本身的失败（如许可未同意）仍会在第二步才暴露（原版已升级，按提示 create 即可）
+    xcrun --find clang >/dev/null 2>&1 || { log_error "需要 Xcode 命令行工具: xcode-select --install"; return 1; }
+
     # 退出原版与候选实例（按可执行文件路径精确退出；二者 bundle id 可能相同，故绝不按 id 退）
     force_quit_instance "$ORIGINAL_WECHAT"
     force_quit_instance "$candidate"
@@ -899,6 +999,7 @@ cmd_adopt() {
         log_error "致命：替换原始 WeChat.app 失败，原版可能已缺失！临时副本仍在: $tmp"
         return 1
     fi
+    xattr -dr com.apple.quarantine "$ORIGINAL_WECHAT" 2>/dev/null || true   # 候选是带公证的腾讯签名包，隔离标记本不影响门禁；顺手清掉
     log_info "原始 WeChat.app 已更新至 $(format_version_info "$cand_v" "$cand_b")"
 
     # 第二步：从新原版重新打包候选副本（恢复 bundle id + adhoc 重签名）
@@ -1031,8 +1132,12 @@ interactive_start() {
         local sel="${instances[$((choice-1))]}"
         local bin="$sel/Contents/MacOS/WeChat"
         [[ -f "$bin" ]] || { log_error "找不到可执行文件: $bin"; return; }
+        if needs_teamfix "$sel"; then
+            log_error "$(basename "$sel") 缺少 Team ID 补丁（修复前创建），会启动即崩溃；请先在菜单中选择「一键同步」"
+            return
+        fi
         log_step "启动 $(basename "$sel")..."
-        nohup "$bin" >/dev/null 2>&1 &
+        launch_app "$sel"
         log_info "$(basename "$sel") 启动成功 (PID: $!)"
     else
         log_error "无效的选择"
@@ -1075,7 +1180,7 @@ startup_version_check() {
         local v b
         v=$(get_app_version "$app")
         b=$(get_app_build "$app")
-        if [[ "$v" != "$ov" || "$b" != "$ob" ]]; then
+        if [[ "$v" != "$ov" || "$b" != "$ob" ]] || needs_teamfix "$app"; then
             mismatched+=("$app")
         fi
     done < <(scan_instances)
@@ -1083,14 +1188,15 @@ startup_version_check() {
     [[ ${#mismatched[@]} -eq 0 ]] && return 0
 
     local oi; oi=$(format_version_info "$ov" "$ob")
-    printf '\n%s检测到 %d 个实例版本与原始微信不一致%s\n' "$YELLOW" "${#mismatched[@]}" "$NC" >&2
+    printf '\n%s检测到 %d 个实例需要与原始微信同步%s\n' "$YELLOW" "${#mismatched[@]}" "$NC" >&2
     printf '原始微信版本: %s%s%s\n' "$GREEN" "$oi" "$NC" >&2
     for app in "${mismatched[@]}"; do
         local v b cmp tag
         v=$(get_app_version "$app")
         b=$(get_app_build "$app")
         cmp=$(version_compare "$v" "$b" "$ov" "$ob")
-        if   [[ "$cmp" == "1" ]];  then tag="较新，将收编为原版"
+        if   [[ "$v" == "$ov" && "$b" == "$ob" ]]; then tag="缺 Team ID 补丁，将重建"
+        elif [[ "$cmp" == "1" ]];  then tag="较新，将收编为原版"
         elif [[ "$cmp" == "-1" ]]; then tag="较旧，将更新"
         else                            tag="版本不同，将更新"
         fi

@@ -10,6 +10,6 @@ allowed-tools: Bash(double-wechat:*)
 
 - 原始 WeChat 的版本（`original.short_version (Build original.build_version)`）
 - 副本数量
-- 每个副本的编号 + 版本（如版本与原始不一致，明确标注 `[需要更新]`）
+- 每个副本的编号 + 版本（`needs_update: true` 时明确标注 `[需要更新]`；版本与原始相同的是缺 Team ID 补丁）
 
 如果有 `needs_update: true` 的实例，最后提示用户可以用 `/double-wechat:update` 一键更新。

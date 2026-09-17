@@ -29,6 +29,7 @@ min_binary_version: 2.1.3
 
 - macOS 12 (Monterey) 或更高
 - `/Applications/WeChat.app` 已正确安装
+- Xcode 命令行工具（`xcode-select --install`）：create/update/adopt 重建副本时要编译 Team ID 补丁（微信 4.1.15+ 的副本缺它会启动即崩溃）；缺失时这些命令会在动任何实例之前报错退出
 - 当前用户必须在 `admin` 组、且 `/Applications` 可写（绝大多数 macOS 用户默认满足；不满足时 `doctor` 会明确报告）
 - `double-wechat` 可执行文件 **≥ 2.1.3** 且在 `PATH` 中
   - 仓库根目录的 `double-wechat.sh` 可直接软链：`ln -s "$PWD/double-wechat.sh" /usr/local/bin/double-wechat`
@@ -116,7 +117,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
       "bundle_id": "com.tencent.xinWeChat0",
       "short_version": "4.1.9",
       "build_version": "268575",
-      "needs_update": false           // true 表示版本与 original 不一致
+      "needs_update": false           // true 表示版本与 original 不一致，或 4.1.15+ 副本缺 Team ID 补丁（需重建）
     }
   ]
 }
@@ -162,7 +163,8 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 **Agent 行为约定**：
 
-- 启动用 `nohup` 后台 fork，立即返回。Agent 不应等待界面就绪
+- 启动在后台 fork（忽略 SIGHUP，并带上 Team ID 补丁），立即返回。Agent 不应等待界面就绪
+- 修复前创建的 4.1.15+ 副本缺 Team ID 补丁，`start` 会拒绝启动并退出 1、提示 `update <n>`；按 §6 约定（先向用户确认、提醒会丢登录态）执行
 - 启动前可选地 `list` 确认实例存在；不存在时本命令会报错并退出 1
 
 ---
@@ -186,7 +188,7 @@ Skill 通过 **shell 子命令** 暴露能力。Agent 通过 host 提供的 shel
 
 ### 6. `double-wechat update [--all | <n>...] [--yes]`
 
-**用途**：把版本与原始 WeChat 不一致的副本重建为最新版本（保留账号编号，不保留旧 app 内文件）。
+**用途**：把版本与原始 WeChat 不一致（或 4.1.15+ 缺 Team ID 补丁）的副本从原版重建（保留账号编号，不保留旧 app 内文件）。
 
 **参数**：
 
